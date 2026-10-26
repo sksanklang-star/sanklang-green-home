@@ -1,7 +1,9 @@
-import type { NextConfig } from "next";
-
-const nextConfig: NextConfig = {
-  output: 'export',
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  experimental: {
+    agentUpgrade: "security",
+    // ... การตั้งค่าอื่นๆ ที่คุณมีอยู่
+  },
 };
 
 export default nextConfig;
