@@ -1,0 +1,11 @@
+{
+  "name": "sanklang-green-home",
+  "compatibility_date": "2026-10-27",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "sanklang-green-db-local",
+      "database_id": "local-dummy-id"
+    }
+  ]
+}
