@@ -5,7 +5,18 @@
     {
       "binding": "DB",
       "database_name": "sanklang-green-db-local",
-      "database_id": "local-dummy-id"
+      "database_id": "af19fb98-6d75-4fb4-91ec-0a59469993f0"
     }
-  ]
+  ],
+  "env": {
+    "production": {
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "sanklang-green-db",
+          "database_id": "ใส่-Database-ID-ของ-sanklang-green-db"
+        }
+      ]
+    }
+  }
 }

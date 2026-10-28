@@ -1,12 +1,14 @@
-/** @type {import('next').NextConfig} */
-const nextConfig = {
-  output: "export",
+import type { NextConfig } from "next";
+
+const isProdBuild = process.env.NODE_ENV === "production";
+
+const nextConfig: NextConfig = {
   experimental: {
     agentUpgrade: "security",
-    // ... การตั้งค่าอื่นๆ ที่คุณมีอยู่
   },
+  ...(isProdBuild ? { output: "export" } : {}),
   images: {
-    unoptimized: true, // แนะนำให้ใส่เพิ่มไว้ด้วย กันปัญหาเรื่องรูปภาพตอนทำ Static Export
+    unoptimized: true,
   },
 };
 
