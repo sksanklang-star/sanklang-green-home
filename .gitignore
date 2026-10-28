@@ -44,3 +44,9 @@ next-env.d.ts
 .wrangler/
 *.sqlite
 *.db
+
+# Ignore uploaded files inside public directory
+public/uploads/
+
+# Ignore API routes in App Router
+app/api/

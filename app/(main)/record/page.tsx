@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useState, useRef } from "react";
-import { Camera, ImagePlus, Check, X } from "lucide-react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Camera, ImagePlus, Check, X, Loader2 } from "lucide-react";
 
 interface WasteCategory {
   id: string;
@@ -10,6 +11,13 @@ interface WasteCategory {
   emoji: string;
   topBorderColor: string;
   iconBgColor: string;
+}
+
+// รองรับทั้งรูปเก่าที่ดึงมาจากเซิร์ฟเวอร์ (existingUrl) และรูปใหม่ที่เพิ่งเลือก (file)
+interface ImageItem {
+  previewUrl: string;
+  file?: File;
+  existingUrl?: string;
 }
 
 const WASTE_CATEGORIES: WasteCategory[] = [
@@ -79,25 +87,167 @@ const WASTE_CATEGORIES: WasteCategory[] = [
   },
 ];
 
+// ย่อรูปและแปลงเป็น WebP
+async function compressImage(file: File): Promise<File> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const MAX_SIZE = 1280;
+      let width = img.width;
+      let height = img.height;
+
+      if (width > height && width > MAX_SIZE) {
+        height = Math.round((height * MAX_SIZE) / width);
+        width = MAX_SIZE;
+      } else if (height > MAX_SIZE) {
+        width = Math.round((width * MAX_SIZE) / height);
+        height = MAX_SIZE;
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      ctx?.drawImage(img, 0, 0, width, height);
+
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) {
+            resolve(file);
+            return;
+          }
+          const compressedFile = new File(
+            [blob],
+            file.name.replace(/\.[^.]+$/, ".webp"),
+            { type: "image/webp" }
+          );
+          resolve(compressedFile);
+        },
+        "image/webp",
+        0.78
+      );
+    };
+    img.onerror = () => resolve(file);
+    img.src = url;
+  });
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = (err) => reject(err);
+    reader.readAsDataURL(file);
+  });
+}
+
+const CACHE_TTL_MS = 60 * 1000; // เก็บ Cache ไว้ 60 วินาที ป้องกันการกด Refresh รัวๆ
+
 export default function RecordPage() {
-  const [recordDate, setRecordDate] = useState("2026-10-22");
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  const [household, setHousehold] = useState<{
+    id: number;
+    house_number: string;
+    moo: number;
+  } | null>(null);
+
+  const [recordDate, setRecordDate] = useState(() => {
+    const dateParam = searchParams.get("date");
+    if (dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam)) return dateParam;
+    return new Date().toISOString().split("T")[0];
+  });
+
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [imagesByCategory, setImagesByCategory] = useState<
-    Record<string, string[]>
+    Record<string, ImageItem[]>
   >({});
+  const [loadingExisting, setLoadingExisting] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const cameraInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
-  // เปิด/ปิดการเลือกชนิดขยะ
+  // 1. ดึงข้อมูลครัวเรือนที่ล็อกอินไว้
+  useEffect(() => {
+    const saved = localStorage.getItem("sanklang_household");
+    if (saved) {
+      try {
+        setHousehold(JSON.parse(saved));
+      } catch {}
+    }
+  }, []);
+
+  // 2. ฟังก์ชันนำข้อมูลที่เคยบันทึกในวันนั้นมาตั้งค่าลง State
+  const applyRecordsToState = useCallback((records: any[]) => {
+    const loadedSelected: string[] = [];
+    const loadedImages: Record<string, ImageItem[]> = {};
+
+    for (const rec of records) {
+      loadedSelected.push(rec.category_id);
+      const urls: string[] = Array.isArray(rec.images) ? rec.images : [];
+      loadedImages[rec.category_id] = urls.map((url) => ({
+        previewUrl: url,
+        existingUrl: url,
+      }));
+    }
+
+    setSelectedIds(loadedSelected);
+    setImagesByCategory(loadedImages);
+  }, []);
+
+  // 3. โหลดข้อมูลและรูปเดิมของวันที่เลือก (ใช้ sessionStorage Cache กันยิง API ซ้ำตอน Refresh)
+  useEffect(() => {
+    if (!household?.id || !recordDate) return;
+
+    const cacheKey = `sanklang_rec_${household.id}_${recordDate}`;
+    const cachedRaw = sessionStorage.getItem(cacheKey);
+
+    if (cachedRaw) {
+      try {
+        const cached = JSON.parse(cachedRaw);
+        if (Date.now() - cached.timestamp < CACHE_TTL_MS) {
+          applyRecordsToState(cached.records || []);
+          return; // ใช้ข้อมูลจาก Cache ทันที ไม่ต้องยิง API
+        }
+      } catch {}
+    }
+
+    let isCancelled = false;
+    setLoadingExisting(true);
+
+    fetch(`/api/records?householdId=${household.id}&date=${recordDate}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (isCancelled) return;
+        const records = data.records || [];
+        applyRecordsToState(records);
+        sessionStorage.setItem(
+          cacheKey,
+          JSON.stringify({ timestamp: Date.now(), records })
+        );
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!isCancelled) setLoadingExisting(false);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [household?.id, recordDate, applyRecordsToState]);
+
   const toggleCategory = (id: string) => {
     setSelectedIds((prev) =>
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
     );
   };
 
-  // จัดการเมื่อผู้ใช้เลือกรูปหรือถ่ายรูป (สูงสุด 3 รูปต่อชนิด)
-  const handleFileChange = (
+  // จัดการเมื่อผู้ใช้เลือกรูปหรือถ่ายรูปเพิ่ม (สูงสุด 3 รูปต่อชนิด)
+  const handleFileChange = async (
     id: string,
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
@@ -106,20 +256,27 @@ export default function RecordPage() {
 
     const currentImages = imagesByCategory[id] || [];
     if (currentImages.length >= 3) {
-      alert("แนบได้สูงสุด 3 รูปต่อชนิดขยะครับ");
+      alert("แนบได้สูงสุด 3 รูปต่อชนิดขยะครับ (ลบภาพเดิมก่อนหากต้องการเปลี่ยนรูป)");
+      e.target.value = "";
       return;
     }
 
-    const newFileUrls = Array.from(files)
-      .slice(0, 3 - currentImages.length)
-      .map((file) => URL.createObjectURL(file));
+    const filesToProcess = Array.from(files).slice(0, 3 - currentImages.length);
+    const processedItems: ImageItem[] = [];
+
+    for (const rawFile of filesToProcess) {
+      const compressed = await compressImage(rawFile);
+      processedItems.push({
+        file: compressed,
+        previewUrl: URL.createObjectURL(compressed),
+      });
+    }
 
     setImagesByCategory((prev) => ({
       ...prev,
-      [id]: [...(prev[id] || []), ...newFileUrls],
+      [id]: [...(prev[id] || []), ...processedItems],
     }));
 
-    // หากยังไม่ได้ติ๊กถูก ให้ติ๊กเลือกชนิดขยะนั้นอัตโนมัติ
     if (!selectedIds.includes(id)) {
       setSelectedIds((prev) => [...prev, id]);
     }
@@ -127,22 +284,73 @@ export default function RecordPage() {
     e.target.value = "";
   };
 
-  // ลบรูปที่แนบไว้
+  // ลบรูปออกจากรายการ (ทั้งรูปเก่าและรูปใหม่)
   const removeImage = (id: string, indexToRemove: number) => {
     setImagesByCategory((prev) => {
-      const updated = (prev[id] || []).filter(
-        (_, idx) => idx !== indexToRemove
-      );
+      const current = prev[id] || [];
+      const target = current[indexToRemove];
+      if (target && target.file) {
+        URL.revokeObjectURL(target.previewUrl);
+      }
+      const updated = current.filter((_, idx) => idx !== indexToRemove);
       return { ...prev, [id]: updated };
     });
   };
 
-  const handleSubmit = () => {
-    if (selectedIds.length === 0) {
-      alert("กรุณาเลือกชนิดขยะอย่างน้อย 1 ชนิดก่อนบันทึกครับ");
+  const handleSubmit = async () => {
+    if (submitting) return;
+
+    if (!household?.id) {
+      alert("กรุณาระบุบ้านเลขที่ก่อนบันทึกข้อมูลครับ");
+      router.push("/");
       return;
     }
-    alert(`บันทึกการคัดแยกจำนวน ${selectedIds.length} ชนิดเรียบร้อยแล้ว!`);
+
+    setSubmitting(true);
+    try {
+      const imagesPayload: Record<string, string[]> = {};
+
+      for (const catId of selectedIds) {
+        const items = imagesByCategory[catId] || [];
+        imagesPayload[catId] = await Promise.all(
+          items.map(async (item) => {
+            // ถ้าเป็นรูปเดิมที่เคยอัปโหลดแล้ว ส่ง URL เดิมไปได้เลย ไม่ต้องแปลง Base64 ซ้ำ
+            if (item.existingUrl) return item.existingUrl;
+            if (item.file) return await fileToBase64(item.file);
+            return "";
+          })
+        );
+      }
+
+      const res = await fetch("/api/records", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          householdId: household.id,
+          recordDate,
+          categories: selectedIds,
+          imagesByCategory: imagesPayload,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || "ไม่สามารถบันทึกข้อมูลได้");
+        setSubmitting(false);
+        return;
+      }
+
+      // ล้าง Cache ของวันที่บันทึกและหน้าประวัติ เพื่อให้ดึงข้อมูลล่าสุดเสมอ
+      sessionStorage.removeItem(`sanklang_rec_${household.id}_${recordDate}`);
+      sessionStorage.removeItem(`sanklang_history_${household.id}`);
+
+      // เด้งไปหน้าประวัติการบันทึกทันที
+      router.push("/history");
+    } catch (error) {
+      alert("เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -156,15 +364,23 @@ export default function RecordPage() {
           วันนี้แยกขยะอะไรบ้าง?
         </h2>
         <p className="text-sm text-gray-500 mt-1">
-          บ้านเลขที่ 0 หมู่ 1 · ไม่ต้องชั่งน้ำหนัก
+          บ้านเลขที่ {household?.house_number || "0"} หมู่ {household?.moo || "1"} · ไม่ต้องชั่งน้ำหนัก
         </p>
       </div>
 
       {/* กล่องเลือกวันที่คัดแยก */}
       <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
-        <label className="block text-xs font-bold text-gray-900 mb-2">
-          วันที่คัดแยก
-        </label>
+        <div className="flex items-center justify-between mb-2">
+          <label className="block text-xs font-bold text-gray-900">
+            วันที่คัดแยก
+          </label>
+          {loadingExisting && (
+            <span className="inline-flex items-center gap-1.5 text-xs text-[#085f46]">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              กำลังโหลดข้อมูลที่เคยบันทึก...
+            </span>
+          )}
+        </div>
         <div className="flex flex-col md:flex-row md:items-center gap-3 md:gap-4">
           <div className="w-full md:w-64 shrink-0">
             <input
@@ -184,7 +400,7 @@ export default function RecordPage() {
         </div>
       </div>
 
-      {/* ตารางการ์ดชนิดขยะทั้ง 8 ชนิด (2 คอลัมน์บนจอคอม, 1 คอลัมน์บนมือถือ) */}
+      {/* ตารางการ์ดชนิดขยะทั้ง 8 ชนิด */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {WASTE_CATEGORIES.map((cat) => {
           const isSelected = selectedIds.includes(cat.id);
@@ -202,7 +418,6 @@ export default function RecordPage() {
               }`}
             >
               <div>
-                {/* แถวบน: ไอคอน + ชื่อหมวดหมู่ + Checkbox */}
                 <div className="flex items-start justify-between gap-3">
                   <div
                     className="flex items-center gap-3.5 cursor-pointer select-none"
@@ -233,7 +448,6 @@ export default function RecordPage() {
 
                 {/* แถวปุ่ม ถ่ายรูป / เพิ่มรูป */}
                 <div className="grid grid-cols-2 gap-3 mt-4">
-                  {/* Input ซ่อนสำหรับเปิดกล้องมือถือ */}
                   <input
                     type="file"
                     accept="image/*"
@@ -244,7 +458,6 @@ export default function RecordPage() {
                     onChange={(e) => handleFileChange(cat.id, e)}
                     className="hidden"
                   />
-                  {/* Input ซ่อนสำหรับเลือกรูปจากอัลบั้ม */}
                   <input
                     type="file"
                     accept="image/*"
@@ -275,23 +488,25 @@ export default function RecordPage() {
                   </button>
                 </div>
 
-                {/* พรีวิวรูปภาพ (แสดงเมื่อมีการแนบรูป) */}
+                {/* แสดงรูปภาพ (ทั้งรูปที่เคยอัปโหลดไว้แล้วและรูปที่เพิ่งเลือกเพิ่ม) */}
                 {images.length > 0 && (
-                  <div className="flex items-center gap-2 mt-3 overflow-x-auto py-1">
-                    {images.map((url, idx) => (
+                  <div className="flex items-center gap-2.5 mt-3.5 overflow-x-auto py-1">
+                    {images.map((item, idx) => (
                       <div
                         key={idx}
-                        className="relative w-14 h-14 rounded-lg overflow-hidden border border-gray-200 shrink-0"
+                        className="relative w-16 h-16 rounded-xl overflow-hidden border border-gray-200 shrink-0 group"
                       >
                         <img
-                          src={url}
+                          src={item.previewUrl}
                           alt={`${cat.title} ${idx + 1}`}
+                          loading="lazy"
                           className="w-full h-full object-cover"
                         />
                         <button
                           type="button"
                           onClick={() => removeImage(cat.id, idx)}
-                          className="absolute top-0.5 right-0.5 bg-black/60 text-white rounded-full p-0.5 hover:bg-black"
+                          title="ลบรูปนี้"
+                          className="absolute top-1 right-1 bg-black/65 text-white rounded-full p-1 hover:bg-red-600 transition-colors"
                         >
                           <X className="w-3 h-3" />
                         </button>
@@ -301,16 +516,15 @@ export default function RecordPage() {
                 )}
               </div>
 
-              {/* ข้อความกำกับด้านล่างการ์ด */}
               <p className="text-xs text-gray-500 mt-4">
-                เลือกเมื่อบ้านคุณคัดแยกชนิดนี้
+                เลือกเมื่อบ้านคุณคัดแยกชนิดนี้ ({images.length}/3 รูป)
               </p>
             </div>
           );
         })}
       </div>
 
-      {/* แถบสรุปผลด้านล่าง (Sticky Bar ลอยตามหน้าจอเวลาเลื่อน และหยุดที่ท้ายตาราง) */}
+      {/* แถบสรุปผลด้านล่าง */}
       <div className="sticky bottom-4 z-20 bg-white/95 backdrop-blur-sm border border-gray-200 rounded-2xl p-4 md:px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-md">
         <div>
           <p className="font-bold text-gray-900 text-sm">
@@ -323,15 +537,20 @@ export default function RecordPage() {
 
         <button
           type="button"
+          disabled={submitting}
           onClick={handleSubmit}
-          className={`inline-flex items-center justify-center gap-2 text-white font-semibold text-xs px-5 py-3 rounded-xl transition-colors ${
+          className={`inline-flex items-center justify-center gap-2 text-white font-semibold text-xs px-5 py-3 rounded-xl transition-colors disabled:opacity-60 ${
             selectedIds.length > 0
               ? "bg-[#085f46] hover:bg-[#064e39]"
               : "bg-[#689b8a] hover:bg-[#5a8a7a]"
           }`}
         >
-          <Check className="w-4 h-4" />
-          <span>บันทึกการคัดแยก</span>
+          {submitting ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <Check className="w-4 h-4" />
+          )}
+          <span>{submitting ? "กำลังบันทึก..." : "บันทึกการคัดแยก"}</span>
         </button>
       </div>
     </div>
