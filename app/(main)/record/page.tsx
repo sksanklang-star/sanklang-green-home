@@ -147,7 +147,6 @@ const CACHE_TTL_MS = 60 * 1000; // เก็บ Cache ไว้ 60 วินา�
 
 export default function RecordPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
 
   const [household, setHousehold] = useState<{
     id: number;
@@ -156,6 +155,7 @@ export default function RecordPage() {
   } | null>(null);
 
   const [recordDate, setRecordDate] = useState(() => {
+    const searchParams = useSearchParams();
     const dateParam = searchParams.get("date");
     if (dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam)) return dateParam;
     return new Date().toISOString().split("T")[0];
