@@ -145,43 +145,35 @@ function fileToBase64(file: File): Promise<string> {
 
 const CACHE_TTL_MS = 60 * 1000; // เก็บ Cache ไว้ 60 วินาที ป้องกันการกด Refresh รัวๆ
 
-export default function RecordPage() {
+
+function RecordContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
 
-  const [household, setHousehold] = useState<{
-    id: number;
-    house_number: string;
-    moo: number;
-  } | null>(null);
+  const [household, setHousehold] = useState<{ id: number; house_number: string; moo: number; } | null>(null);
 
+  // ปรับการดึงค่าเริ่มต้นของข้อมูลวันที่ให้อ่านผ่าน searchParams ได้อย่างปลอดภัย
   const [recordDate, setRecordDate] = useState(() => {
-    const searchParams = useSearchParams();
     const dateParam = searchParams.get("date");
     if (dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam)) return dateParam;
     return new Date().toISOString().split("T")[0];
   });
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [imagesByCategory, setImagesByCategory] = useState<
-    Record<string, ImageItem[]>
-  >({});
+  const [imagesByCategory, setImagesByCategory] = useState<Record<string, ImageItem[]>>({});
   const [loadingExisting, setLoadingExisting] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const cameraInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
-  // 1. ดึงข้อมูลครัวเรือนที่ล็อกอินไว้
   useEffect(() => {
     const saved = localStorage.getItem("sanklang_household");
     if (saved) {
-      try {
-        setHousehold(JSON.parse(saved));
-      } catch {}
+      try { setHousehold(JSON.parse(saved)); } catch {}
     }
   }, []);
 
-  // 2. ฟังก์ชันนำข้อมูลที่เคยบันทึกในวันนั้นมาตั้งค่าลง State
   const applyRecordsToState = useCallback((records: any[]) => {
     const loadedSelected: string[] = [];
     const loadedImages: Record<string, ImageItem[]> = {};
@@ -189,17 +181,13 @@ export default function RecordPage() {
     for (const rec of records) {
       loadedSelected.push(rec.category_id);
       const urls: string[] = Array.isArray(rec.images) ? rec.images : [];
-      loadedImages[rec.category_id] = urls.map((url) => ({
-        previewUrl: url,
-        existingUrl: url,
-      }));
+      loadedImages[rec.category_id] = urls.map((url) => ({ previewUrl: url, existingUrl: url }));
     }
 
     setSelectedIds(loadedSelected);
     setImagesByCategory(loadedImages);
   }, []);
 
-  // 3. โหลดข้อมูลและรูปเดิมของวันที่เลือก (ใช้ sessionStorage Cache กันยิง API ซ้ำตอน Refresh)
   useEffect(() => {
     if (!household?.id || !recordDate) return;
 
@@ -211,7 +199,7 @@ export default function RecordPage() {
         const cached = JSON.parse(cachedRaw);
         if (Date.now() - cached.timestamp < CACHE_TTL_MS) {
           applyRecordsToState(cached.records || []);
-          return; // ใช้ข้อมูลจาก Cache ทันที ไม่ต้องยิง API
+          return;
         }
       } catch {}
     }
@@ -225,32 +213,21 @@ export default function RecordPage() {
         if (isCancelled) return;
         const records = data.records || [];
         applyRecordsToState(records);
-        sessionStorage.setItem(
-          cacheKey,
-          JSON.stringify({ timestamp: Date.now(), records })
-        );
+        sessionStorage.setItem(cacheKey, JSON.stringify({ timestamp: Date.now(), records }));
       })
       .catch(() => {})
       .finally(() => {
         if (!isCancelled) setLoadingExisting(false);
       });
 
-    return () => {
-      isCancelled = true;
-    };
+    return () => { isCancelled = true; };
   }, [household?.id, recordDate, applyRecordsToState]);
 
   const toggleCategory = (id: string) => {
-    setSelectedIds((prev) =>
-      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
-    );
+    setSelectedIds((prev) => prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]);
   };
 
-  // จัดการเมื่อผู้ใช้เลือกรูปหรือถ่ายรูปเพิ่ม (สูงสุด 3 รูปต่อชนิด)
-  const handleFileChange = async (
-    id: string,
-    e: React.ChangeEvent<HTMLInputElement>
-  ) => {
+  const handleFileChange = async (id: string, e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
@@ -266,21 +243,11 @@ export default function RecordPage() {
 
     for (const rawFile of filesToProcess) {
       const compressed = await compressImage(rawFile);
-      processedItems.push({
-        file: compressed,
-        previewUrl: URL.createObjectURL(compressed),
-      });
+      processedItems.push({ file: compressed, previewUrl: URL.createObjectURL(compressed) });
     }
 
-    setImagesByCategory((prev) => ({
-      ...prev,
-      [id]: [...(prev[id] || []), ...processedItems],
-    }));
-
-    if (!selectedIds.includes(id)) {
-      setSelectedIds((prev) => [...prev, id]);
-    }
-
+    setImagesByCategory((prev) => ({ ...prev, [id]: [...(prev[id] || []), ...processedItems] }));
+    if (!selectedIds.includes(id)) { setSelectedIds((prev) => [...prev, id]); }
     e.target.value = "";
   };
 
@@ -296,6 +263,7 @@ export default function RecordPage() {
       return { ...prev, [id]: updated };
     });
   };
+
 
   const handleSubmit = async () => {
     if (submitting) return;
@@ -354,9 +322,7 @@ export default function RecordPage() {
   };
 
   return (
-    <Suspense fallback={<div>กำลังโหลด...</div>}>
-
-    <div className="space-y-6 pb-4">
+   <div className="space-y-6 pb-4">
       {/* ส่วนหัวของหน้า */}
       <div>
         <p className="text-xs font-medium text-[#4a6b5b] tracking-wide">
@@ -556,6 +522,18 @@ export default function RecordPage() {
         </button>
       </div>
     </div>
+  );
+}
+
+export default function RecordPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex items-center justify-center min-h-screen bg-slate-50">
+        <Loader2 className="w-8 h-8 animate-spin text-green-600" />
+        <span className="ml-2 font-medium text-slate-600">กำลังโหลดหน้าบันทึก...</span>
+      </div>
+    }>
+      <RecordContent />
     </Suspense>
   );
 }
