@@ -50,5 +50,3 @@ public/uploads/
 
 # Ignore API routes in App Router
 app/api/
-app/api/household/
-app/api/records/
