@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Camera, ImagePlus, Check, X, Loader2 } from "lucide-react";
-
+import { Suspense } from 'react'
 interface WasteCategory {
   id: string;
   title: string;
@@ -354,6 +354,8 @@ export default function RecordPage() {
   };
 
   return (
+    <Suspense fallback={<div>กำลังโหลด...</div>}>
+
     <div className="space-y-6 pb-4">
       {/* ส่วนหัวของหน้า */}
       <div>
@@ -554,5 +556,6 @@ export default function RecordPage() {
         </button>
       </div>
     </div>
+    </Suspense>
   );
 }
