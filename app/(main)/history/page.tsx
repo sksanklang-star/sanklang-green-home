@@ -9,6 +9,11 @@ import {
   Calendar,
   Loader2,
   Lock,
+  Scale,
+  X,
+  ChevronLeft,
+  ChevronRight,
+  ZoomIn,
 } from "lucide-react";
 
 const CATEGORY_MAP: Record<string, { title: string; emoji: string }> = {
@@ -23,16 +28,14 @@ const CATEGORY_MAP: Record<string, { title: string; emoji: string }> = {
 };
 
 const CACHE_TTL_MS = 60 * 1000;
-const PAGE_SIZE = 10; // แสดงและโหลดรูปภาพทีละ 10 รายการ
+const PAGE_SIZE = 10;
 
-// 🔒 ตรวจสอบ URL รูปภาพให้ปลอดภัยก่อนเรนเดอร์
 function isSafeImageUrl(url: unknown): url is string {
   if (typeof url !== "string" || url.length > 250) return false;
   if (/[<>"'\\]/.test(url)) return false;
   return url.startsWith("/uploads/") || url.startsWith("/api/image?key=");
 }
 
-// ตรวจสอบว่ารายการนี้อยู่ในช่วง 7 วันล่าสุดที่อนุญาตให้แก้ไขหรือไม่
 function isWithin7Days(dateStr: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
   const now = new Date();
@@ -51,9 +54,15 @@ export default function HistoryPage() {
   );
   const [records, setRecords] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-
-  // ควบคุมจำนวนรายการที่แสดงบนหน้าจอ (เริ่มต้น 10 รายการ)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+
+  // State สำหรับเปิดดูรูปภาพใน Modal หน้าเดิม
+  const [lightbox, setLightbox] = useState<{
+    title: string;
+    date: string;
+    images: string[];
+    index: number;
+  } | null>(null);
 
   useEffect(() => {
     const saved = localStorage.getItem("sanklang_household");
@@ -72,7 +81,6 @@ export default function HistoryPage() {
       return;
     }
 
-    // เช็ค Cache ก่อนยิง API
     const cacheKey = `sanklang_history_${householdId}`;
     const cachedRaw = sessionStorage.getItem(cacheKey);
     if (cachedRaw) {
@@ -108,12 +116,10 @@ export default function HistoryPage() {
     return () => controller.abort();
   }, []);
 
-  // เมื่อผู้ใช้เปลี่ยนตัวกรอง (ชนิดขยะ หรือ วันที่) ให้รีเซ็ตกลับมาแสดง 10 รายการแรกเสมอ
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
   }, [wasteType, startDate, endDate]);
 
-  // กรองรายการทั้งหมดตามเงื่อนไขที่เลือก
   const filteredRecords = useMemo(() => {
     return records.filter((rec) => {
       if (wasteType !== "all" && rec.category_id !== wasteType) return false;
@@ -123,13 +129,20 @@ export default function HistoryPage() {
     });
   }, [records, wasteType, startDate, endDate]);
 
-  // ตัดมาเฉพาะจำนวนที่ต้องการแสดงผล (เช่น 10, 20, 30 รายการ) เพื่อไม่ให้โหลดรูปเกินจำเป็น
   const displayedRecords = useMemo(() => {
     return filteredRecords.slice(0, visibleCount);
   }, [filteredRecords, visibleCount]);
 
   const uniqueDays = useMemo(() => {
     return new Set(filteredRecords.map((r) => r.record_date)).size;
+  }, [filteredRecords]);
+
+  // คำนวณน้ำหนักรวมของรายการที่กรองอยู่
+  const totalWeightKg = useMemo(() => {
+    return filteredRecords.reduce(
+      (sum, r) => sum + (Number(r.weight_kg) || 0),
+      0
+    );
   }, [filteredRecords]);
 
   const hasMore = visibleCount < filteredRecords.length;
@@ -203,9 +216,15 @@ export default function HistoryPage() {
         </div>
 
         {/* ข้อความสรุปผลการค้นหา */}
-        <div className="flex items-center justify-between mt-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 mt-4">
           <p className="text-xs text-gray-500">
             พบ {filteredRecords.length} รายการ · {uniqueDays} วันที่ร่วมคัดแยก
+            {totalWeightKg > 0 && (
+              <span className="ml-1.5 text-[#085f46] font-semibold">
+                · น้ำหนักรวม{" "}
+                {totalWeightKg.toFixed(2).replace(/\.00$/, "")} กก.
+              </span>
+            )}
           </p>
           {filteredRecords.length > 0 && (
             <p className="text-xs text-gray-400">
@@ -240,6 +259,7 @@ export default function HistoryPage() {
               const safeImages: string[] = Array.isArray(rec.images)
                 ? rec.images.filter(isSafeImageUrl)
                 : [];
+              const weightKg = Number(rec.weight_kg) || 0;
               const editable = isWithin7Days(rec.record_date);
 
               return (
@@ -248,7 +268,7 @@ export default function HistoryPage() {
                   className="border border-gray-200 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:border-gray-300 transition-colors"
                 >
                   <div className="space-y-2">
-                    <div className="flex items-center gap-2.5 flex-wrap">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-xl">{catInfo.emoji}</span>
                       <span className="font-bold text-gray-900 text-sm">
                         {catInfo.title}
@@ -256,6 +276,12 @@ export default function HistoryPage() {
                       <span className="text-xs bg-[#e5efe3] text-[#085f46] font-semibold px-2.5 py-0.5 rounded-full">
                         +{rec.points || 1} คะแนน
                       </span>
+                      {weightKg > 0 && (
+                        <span className="inline-flex items-center gap-1 text-xs bg-gray-100 text-gray-700 font-medium px-2.5 py-0.5 rounded-full">
+                          <Scale className="w-3 h-3 text-gray-500" />
+                          {weightKg} กก.
+                        </span>
+                      )}
                     </div>
 
                     <p className="text-xs text-gray-500 flex items-center gap-1.5">
@@ -263,30 +289,39 @@ export default function HistoryPage() {
                       <span>วันที่คัดแยก: {rec.record_date}</span>
                     </p>
 
+                    {/* กดที่รูปเพื่อเปิด Modal ดูรูปในหน้าเดิม */}
                     {safeImages.length > 0 && (
                       <div className="flex items-center gap-2 pt-1">
                         {safeImages.map((url, i) => (
-                          <a
+                          <button
                             key={i}
-                            href={url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="w-16 h-16 rounded-xl overflow-hidden border border-gray-200 block shrink-0 hover:opacity-90"
+                            type="button"
+                            onClick={() =>
+                              setLightbox({
+                                title: catInfo.title,
+                                date: rec.record_date,
+                                images: safeImages,
+                                index: i,
+                              })
+                            }
+                            className="relative w-16 h-16 rounded-xl overflow-hidden border border-gray-200 block shrink-0 group focus:outline-none focus:ring-2 focus:ring-[#085f46]"
                           >
                             <img
                               src={url}
                               alt={`${catInfo.title} ${i + 1}`}
                               loading="lazy"
                               decoding="async"
-                              className="w-full h-full object-cover"
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform"
                             />
-                          </a>
+                            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/25 transition-colors flex items-center justify-center">
+                              <ZoomIn className="w-4 h-4 text-white opacity-0 group-hover:opacity-100 transition-opacity drop-shadow" />
+                            </div>
+                          </button>
                         ))}
                       </div>
                     )}
                   </div>
 
-                  {/* แสดงปุ่มแก้ไขเฉพาะรายการภายใน 7 วัน */}
                   {editable ? (
                     <Link
                       href={`/record?date=${encodeURIComponent(rec.record_date)}`}
@@ -305,14 +340,11 @@ export default function HistoryPage() {
               );
             })}
 
-            {/* ปุ่มกดดูเพิ่มเติม โหลดเพิ่มทีละ 10 รายการ */}
             {hasMore && (
               <div className="pt-3 flex justify-center">
                 <button
                   type="button"
-                  onClick={() =>
-                    setVisibleCount((prev) => prev + PAGE_SIZE)
-                  }
+                  onClick={() => setVisibleCount((prev) => prev + PAGE_SIZE)}
                   className="w-full sm:w-auto inline-flex items-center justify-center gap-2 bg-[#f8faf7] hover:bg-[#eef3e3] border border-gray-200 text-[#085f46] font-semibold text-xs px-6 py-3 rounded-xl transition-colors"
                 >
                   <span>
@@ -327,6 +359,116 @@ export default function HistoryPage() {
           </div>
         )}
       </div>
+
+      {/* =========================================================
+          Modal Lightbox: แสดงรูปภาพขยายใหญ่ในหน้าเดิม
+      ========================================================= */}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setLightbox(null)}
+        >
+          <div
+            className="relative max-w-3xl w-full bg-white rounded-3xl overflow-hidden shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-100">
+              <div>
+                <h4 className="font-bold text-gray-900 text-sm">
+                  {lightbox.title} · วันที่ {lightbox.date}
+                </h4>
+                <p className="text-xs text-gray-500">
+                  รูปที่ {lightbox.index + 1} จาก {lightbox.images.length}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setLightbox(null)}
+                className="p-1.5 rounded-full text-gray-500 hover:text-gray-900 hover:bg-gray-100 transition-colors"
+                aria-label="ปิดหน้าต่างดูรูป"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="relative bg-gray-950 flex items-center justify-center h-[60vh] max-h-[520px]">
+              <img
+                src={lightbox.images[lightbox.index]}
+                alt={`${lightbox.title} ${lightbox.index + 1}`}
+                className="max-w-full max-h-full object-contain"
+              />
+
+              {lightbox.images.length > 1 && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setLightbox((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              index:
+                                (prev.index - 1 + prev.images.length) %
+                                prev.images.length,
+                            }
+                          : null
+                      )
+                    }
+                    className="absolute left-3 top-1/2 -translate-y-1/2 bg-white/90 hover:bg-white text-gray-900 rounded-full p-2 shadow-md transition-colors"
+                    aria-label="รูปก่อนหน้า"
+                  >
+                    <ChevronLeft className="w-5 h-5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setLightbox((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              index: (prev.index + 1) % prev.images.length,
+                            }
+                          : null
+                      )
+                    }
+                    className="absolute right-3 top-1/2 -translate-y-1/2 bg-white/90 hover:bg-white text-gray-900 rounded-full p-2 shadow-md transition-colors"
+                    aria-label="รูปถัดไป"
+                  >
+                    <ChevronRight className="w-5 h-5" />
+                  </button>
+                </>
+              )}
+            </div>
+
+            {lightbox.images.length > 1 && (
+              <div className="flex items-center justify-center gap-2 p-3 bg-gray-50">
+                {lightbox.images.map((imgUrl, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() =>
+                      setLightbox((prev) =>
+                        prev ? { ...prev, index: i } : null
+                      )
+                    }
+                    className={`w-12 h-12 rounded-lg overflow-hidden border-2 transition-all ${
+                      i === lightbox.index
+                        ? "border-[#085f46] scale-105"
+                        : "border-transparent opacity-60 hover:opacity-100"
+                    }`}
+                  >
+                    <img
+                      src={imgUrl}
+                      alt=""
+                      className="w-full h-full object-cover"
+                    />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

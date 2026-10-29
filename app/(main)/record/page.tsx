@@ -1,9 +1,19 @@
 "use client";
 
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Camera, ImagePlus, Check, X, Loader2 } from "lucide-react";
-import { Suspense } from 'react'
+import {
+  Camera,
+  ImagePlus,
+  Check,
+  X,
+  Loader2,
+  Scale,
+  ChevronLeft,
+  ChevronRight,
+  ZoomIn,
+} from "lucide-react";
+
 interface WasteCategory {
   id: string;
   title: string;
@@ -13,7 +23,6 @@ interface WasteCategory {
   iconBgColor: string;
 }
 
-// รองรับทั้งรูปเก่าที่ดึงมาจากเซิร์ฟเวอร์ (existingUrl) และรูปใหม่ที่เพิ่งเลือก (file)
 interface ImageItem {
   previewUrl: string;
   file?: File;
@@ -87,7 +96,6 @@ const WASTE_CATEGORIES: WasteCategory[] = [
   },
 ];
 
-// ย่อรูปและแปลงเป็น WebP
 async function compressImage(file: File): Promise<File> {
   return new Promise((resolve) => {
     const img = new Image();
@@ -143,49 +151,83 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
-const CACHE_TTL_MS = 60 * 1000; // เก็บ Cache ไว้ 60 วินาที ป้องกันการกด Refresh รัวๆ
+const CACHE_TTL_MS = 60 * 1000;
 
-
-function RecordContent() {
+export default function RecordPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  const [household, setHousehold] = useState<{ id: number; house_number: string; moo: number; } | null>(null);
+  const [household, setHousehold] = useState<{
+    id: number;
+    house_number: string;
+    moo: number;
+  } | null>(null);
 
-  // ปรับการดึงค่าเริ่มต้นของข้อมูลวันที่ให้อ่านผ่าน searchParams ได้อย่างปลอดภัย
   const [recordDate, setRecordDate] = useState(() => {
     const dateParam = searchParams.get("date");
     if (dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam)) return dateParam;
     return new Date().toISOString().split("T")[0];
   });
 
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [imagesByCategory, setImagesByCategory] = useState<Record<string, ImageItem[]>>({});
+  const [imagesByCategory, setImagesByCategory] = useState<
+    Record<string, ImageItem[]>
+  >({});
+  const [weightsByCategory, setWeightsByCategory] = useState<
+    Record<string, string>
+  >({});
+  // เก็บรายชื่อหมวดหมู่ที่ยังไม่ได้กรอกน้ำหนักตอนกดบันทึก เพื่อไฮไลต์กรอบสีแดง
+  const [missingWeightIds, setMissingWeightIds] = useState<string[]>([]);
+
   const [loadingExisting, setLoadingExisting] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  // State สำหรับ Modal ดูรูปขยายใหญ่ในหน้าเดิม
+  const [lightbox, setLightbox] = useState<{
+    title: string;
+    images: string[];
+    index: number;
+  } | null>(null);
 
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const cameraInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
+  // คำนวณรายการที่ถูกเลือกอัตโนมัติจากหมวดที่มีรูปภาพอย่างน้อย 1 รูปเท่านั้น
+  const selectedIds = useMemo(() => {
+    return WASTE_CATEGORIES.map((c) => c.id).filter(
+      (id) => (imagesByCategory[id]?.length || 0) > 0
+    );
+  }, [imagesByCategory]);
+
   useEffect(() => {
     const saved = localStorage.getItem("sanklang_household");
     if (saved) {
-      try { setHousehold(JSON.parse(saved)); } catch {}
+      try {
+        setHousehold(JSON.parse(saved));
+      } catch {}
     }
   }, []);
 
   const applyRecordsToState = useCallback((records: any[]) => {
-    const loadedSelected: string[] = [];
     const loadedImages: Record<string, ImageItem[]> = {};
+    const loadedWeights: Record<string, string> = {};
 
     for (const rec of records) {
-      loadedSelected.push(rec.category_id);
       const urls: string[] = Array.isArray(rec.images) ? rec.images : [];
-      loadedImages[rec.category_id] = urls.map((url) => ({ previewUrl: url, existingUrl: url }));
+      if (urls.length > 0) {
+        loadedImages[rec.category_id] = urls.map((url) => ({
+          previewUrl: url,
+          existingUrl: url,
+        }));
+      }
+      const w = Number(rec.weight_kg);
+      if (w > 0) {
+        loadedWeights[rec.category_id] = String(w);
+      }
     }
 
-    setSelectedIds(loadedSelected);
     setImagesByCategory(loadedImages);
+    setWeightsByCategory(loadedWeights);
+    setMissingWeightIds([]);
   }, []);
 
   useEffect(() => {
@@ -213,21 +255,44 @@ function RecordContent() {
         if (isCancelled) return;
         const records = data.records || [];
         applyRecordsToState(records);
-        sessionStorage.setItem(cacheKey, JSON.stringify({ timestamp: Date.now(), records }));
+        sessionStorage.setItem(
+          cacheKey,
+          JSON.stringify({ timestamp: Date.now(), records })
+        );
       })
       .catch(() => {})
       .finally(() => {
         if (!isCancelled) setLoadingExisting(false);
       });
 
-    return () => { isCancelled = true; };
+    return () => {
+      isCancelled = true;
+    };
   }, [household?.id, recordDate, applyRecordsToState]);
 
-  const toggleCategory = (id: string) => {
-    setSelectedIds((prev) => prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]);
+  // จัดการเมื่อกรอกปริมาณกิโลกรัม (รับเฉพาะตัวเลขและจุดทศนิยม)
+  const handleWeightChange = (id: string, rawVal: string) => {
+    const cleaned = rawVal.replace(/[^0-9.]/g, "");
+    const parts = cleaned.split(".");
+    const formatted =
+      parts.length > 2 ? `${parts[0]}.${parts.slice(1).join("")}` : cleaned;
+
+    if (Number(formatted) > 500) return;
+
+    setWeightsByCategory((prev) => ({
+      ...prev,
+      [id]: formatted,
+    }));
+
+    if (Number(formatted) > 0) {
+      setMissingWeightIds((prev) => prev.filter((item) => item !== id));
+    }
   };
 
-  const handleFileChange = async (id: string, e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (
+    id: string,
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
@@ -243,15 +308,21 @@ function RecordContent() {
 
     for (const rawFile of filesToProcess) {
       const compressed = await compressImage(rawFile);
-      processedItems.push({ file: compressed, previewUrl: URL.createObjectURL(compressed) });
+      processedItems.push({
+        file: compressed,
+        previewUrl: URL.createObjectURL(compressed),
+      });
     }
 
-    setImagesByCategory((prev) => ({ ...prev, [id]: [...(prev[id] || []), ...processedItems] }));
-    if (!selectedIds.includes(id)) { setSelectedIds((prev) => [...prev, id]); }
+    setImagesByCategory((prev) => ({
+      ...prev,
+      [id]: [...(prev[id] || []), ...processedItems],
+    }));
+
     e.target.value = "";
   };
 
-  // ลบรูปออกจากรายการ (ทั้งรูปเก่าและรูปใหม่)
+  // เมื่อลบรูปออกจนเหลือ 0 รูป หมวดนั้นจะถูกยกเลิกการเลือกอัตโนมัติ
   const removeImage = (id: string, indexToRemove: number) => {
     setImagesByCategory((prev) => {
       const current = prev[id] || [];
@@ -260,10 +331,12 @@ function RecordContent() {
         URL.revokeObjectURL(target.previewUrl);
       }
       const updated = current.filter((_, idx) => idx !== indexToRemove);
+      if (updated.length === 0) {
+        setMissingWeightIds((m) => m.filter((item) => item !== id));
+      }
       return { ...prev, [id]: updated };
     });
   };
-
 
   const handleSubmit = async () => {
     if (submitting) return;
@@ -274,20 +347,42 @@ function RecordContent() {
       return;
     }
 
+    // ตรวจสอบว่าทุกหมวดที่มีรูปภาพ ต้องกรอกน้ำหนัก (> 0 กก.) ครบทุกหมวด
+    const invalidWeightCats: string[] = [];
+    for (const catId of selectedIds) {
+      const w = parseFloat(weightsByCategory[catId] || "0");
+      if (!Number.isFinite(w) || w <= 0) {
+        invalidWeightCats.push(catId);
+      }
+    }
+
+    if (invalidWeightCats.length > 0) {
+      setMissingWeightIds(invalidWeightCats);
+      const missingNames = WASTE_CATEGORIES.filter((c) =>
+        invalidWeightCats.includes(c.id)
+      )
+        .map((c) => c.title)
+        .join(", ");
+      alert(`กรุณากรอกปริมาณน้ำหนัก (กิโลกรัม) สำหรับ: ${missingNames}`);
+      return;
+    }
+
     setSubmitting(true);
     try {
       const imagesPayload: Record<string, string[]> = {};
+      const weightsPayload: Record<string, number> = {};
 
       for (const catId of selectedIds) {
         const items = imagesByCategory[catId] || [];
         imagesPayload[catId] = await Promise.all(
           items.map(async (item) => {
-            // ถ้าเป็นรูปเดิมที่เคยอัปโหลดแล้ว ส่ง URL เดิมไปได้เลย ไม่ต้องแปลง Base64 ซ้ำ
             if (item.existingUrl) return item.existingUrl;
             if (item.file) return await fileToBase64(item.file);
             return "";
           })
         );
+        const w = parseFloat(weightsByCategory[catId] || "0");
+        weightsPayload[catId] = Math.round(w * 100) / 100;
       }
 
       const res = await fetch("/api/records", {
@@ -298,6 +393,7 @@ function RecordContent() {
           recordDate,
           categories: selectedIds,
           imagesByCategory: imagesPayload,
+          weightsByCategory: weightsPayload,
         }),
       });
 
@@ -308,17 +404,14 @@ function RecordContent() {
         return;
       }
 
-      // ล้าง Cache ของวันที่บันทึกและหน้าประวัติ เพื่อให้ดึงข้อมูลล่าสุดเสมอ
       sessionStorage.removeItem(`sanklang_rec_${household.id}_${recordDate}`);
       sessionStorage.removeItem(`sanklang_history_${household.id}`);
-      // ล้าง Cache หน้า community เมื่อมีการบันทึกขยะใหม่
       Object.keys(sessionStorage).forEach((key) => {
         if (key.startsWith("sanklang_comm_")) {
           sessionStorage.removeItem(key);
         }
       });
-      
-      // เด้งไปหน้าประวัติการบันทึกทันที
+
       router.push("/history");
     } catch (error) {
       alert("เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์");
@@ -327,18 +420,25 @@ function RecordContent() {
     }
   };
 
+  // คำนวณน้ำหนักรวมของหมวดที่มีรูปภาพ
+  const totalSelectedWeight = selectedIds.reduce((sum, id) => {
+    const val = parseFloat(weightsByCategory[id] || "0");
+    return sum + (Number.isFinite(val) && val > 0 ? val : 0);
+  }, 0);
+
   return (
-   <div className="space-y-6 pb-4">
+    <div className="space-y-6 pb-4">
       {/* ส่วนหัวของหน้า */}
       <div>
         <p className="text-xs font-medium text-[#4a6b5b] tracking-wide">
-          เลือก · ถ่าย · บันทึก
+          ถ่ายรูป · ระบุน้ำหนัก · บันทึก
         </p>
         <h2 className="text-2xl md:text-3xl font-bold text-gray-900 mt-0.5">
           วันนี้แยกขยะอะไรบ้าง?
         </h2>
         <p className="text-sm text-gray-500 mt-1">
-          บ้านเลขที่ {household?.house_number || "0"} หมู่ {household?.moo || "1"} · ไม่ต้องชั่งน้ำหนัก
+          บ้านเลขที่ {household?.house_number || "0"} หมู่{" "}
+          {household?.moo || "1"} · แนบรูปและระบุปริมาณกิโลกรัมเพื่อบันทึก
         </p>
       </div>
 
@@ -369,7 +469,9 @@ function RecordContent() {
               <span>📷</span>
               <span>ถ่ายเฉพาะขยะ หลีกเลี่ยงใบหน้าและเอกสารส่วนตัว</span>
             </p>
-            <p>แนบ 1–3 รูปต่อชนิด · ชนิดเดิมวันเดียวกันได้คะแนนครั้งเดียว</p>
+            <p>
+              แนบ 1–3 รูปต่อชนิด (ระบบจะติ๊กเลือกให้อัตโนมัติเมื่อมีรูป) และกรอกน้ำหนักรวม
+            </p>
           </div>
         </div>
       </div>
@@ -377,8 +479,10 @@ function RecordContent() {
       {/* ตารางการ์ดชนิดขยะทั้ง 8 ชนิด */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {WASTE_CATEGORIES.map((cat) => {
-          const isSelected = selectedIds.includes(cat.id);
           const images = imagesByCategory[cat.id] || [];
+          const isSelected = images.length > 0; // เช็คอัตโนมัติจากรูปภาพเท่านั้น
+          const weightVal = weightsByCategory[cat.id] || "";
+          const isMissingWeight = missingWeightIds.includes(cat.id);
 
           return (
             <div
@@ -393,10 +497,7 @@ function RecordContent() {
             >
               <div>
                 <div className="flex items-start justify-between gap-3">
-                  <div
-                    className="flex items-center gap-3.5 cursor-pointer select-none"
-                    onClick={() => toggleCategory(cat.id)}
-                  >
+                  <div className="flex items-center gap-3.5 select-none">
                     <div
                       className={`w-12 h-12 rounded-2xl ${cat.iconBgColor} flex items-center justify-center text-2xl shrink-0`}
                     >
@@ -412,11 +513,18 @@ function RecordContent() {
                     </div>
                   </div>
 
+                  {/* Checkbox ล็อกอัตโนมัติ (ติ๊กถูกเฉพาะเมื่อมีรูปภาพ 1-3 รูป) */}
                   <input
                     type="checkbox"
                     checked={isSelected}
-                    onChange={() => toggleCategory(cat.id)}
-                    className="w-4 h-4 mt-1 rounded border-gray-300 text-[#085f46] focus:ring-[#085f46] cursor-pointer accent-[#085f46]"
+                    disabled
+                    readOnly
+                    title={
+                      isSelected
+                        ? "เลือกอัตโนมัติเนื่องจากแนบรูปแล้ว"
+                        : "แนบรูปภาพเพื่อเลือกหมวดหมู่นี้"
+                    }
+                    className="w-4 h-4 mt-1 rounded border-gray-300 text-[#085f46] accent-[#085f46] disabled:opacity-90 cursor-not-allowed"
                   />
                 </div>
 
@@ -462,25 +570,88 @@ function RecordContent() {
                   </button>
                 </div>
 
-                {/* แสดงรูปภาพ (ทั้งรูปที่เคยอัปโหลดไว้แล้วและรูปที่เพิ่งเลือกเพิ่ม) */}
+                {/* ช่องกรอกปริมาณโดยรวม (บังคับกรอกเมื่อมีรูปภาพ) */}
+                <div
+                  className={`mt-3 flex items-center justify-between gap-3 rounded-xl px-3.5 py-2 border transition-colors ${
+                    isMissingWeight
+                      ? "bg-red-50/70 border-red-300"
+                      : isSelected
+                      ? "bg-[#eef6ec]/60 border-[#085f46]/30"
+                      : "bg-[#f8faf7] border-gray-200/80 opacity-60"
+                  }`}
+                >
+                  <label
+                    htmlFor={`weight-${cat.id}`}
+                    className="flex items-center gap-1.5 text-xs font-medium text-gray-800"
+                  >
+                    <Scale className="w-3.5 h-3.5 text-[#085f46]" />
+                    <span>
+                      ปริมาณโดยรวม{" "}
+                      {isSelected && (
+                        <span className="text-red-600 font-bold">*</span>
+                      )}
+                    </span>
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      id={`weight-${cat.id}`}
+                      type="text"
+                      inputMode="decimal"
+                      disabled={!isSelected}
+                      placeholder={isSelected ? "ระบุ กก." : "แนบรูปก่อน"}
+                      value={weightVal}
+                      onChange={(e) =>
+                        handleWeightChange(cat.id, e.target.value)
+                      }
+                      className={`w-24 bg-white border rounded-lg px-2.5 py-1 text-right text-xs font-semibold text-gray-900 focus:outline-none focus:ring-2 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed ${
+                        isMissingWeight
+                          ? "border-red-400 focus:ring-red-200 focus:border-red-500"
+                          : "border-gray-300 focus:ring-[#085f46]/20 focus:border-[#085f46]"
+                      }`}
+                    />
+                    <span className="text-xs text-gray-600 font-medium">
+                      กก.
+                    </span>
+                  </div>
+                </div>
+                {isMissingWeight && (
+                  <p className="text-[11px] text-red-600 font-medium mt-1">
+                    * กรุณาระบุน้ำหนักมากกว่า 0 กิโลกรัม
+                  </p>
+                )}
+
+                {/* แสดงรูปภาพ (กดที่รูปเพื่อเปิดดูรูปใหญ่ใน Modal หน้าเดิมได้ทันที) */}
                 {images.length > 0 && (
                   <div className="flex items-center gap-2.5 mt-3.5 overflow-x-auto py-1">
                     {images.map((item, idx) => (
                       <div
                         key={idx}
-                        className="relative w-16 h-16 rounded-xl overflow-hidden border border-gray-200 shrink-0 group"
+                        className="relative w-16 h-16 rounded-xl overflow-hidden border border-gray-200 shrink-0 group cursor-pointer"
+                        onClick={() =>
+                          setLightbox({
+                            title: cat.title,
+                            images: images.map((img) => img.previewUrl),
+                            index: idx,
+                          })
+                        }
                       >
                         <img
                           src={item.previewUrl}
                           alt={`${cat.title} ${idx + 1}`}
                           loading="lazy"
-                          className="w-full h-full object-cover"
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform"
                         />
+                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
+                          <ZoomIn className="w-4 h-4 text-white opacity-0 group-hover:opacity-100 transition-opacity drop-shadow" />
+                        </div>
                         <button
                           type="button"
-                          onClick={() => removeImage(cat.id, idx)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            removeImage(cat.id, idx);
+                          }}
                           title="ลบรูปนี้"
-                          className="absolute top-1 right-1 bg-black/65 text-white rounded-full p-1 hover:bg-red-600 transition-colors"
+                          className="absolute top-1 right-1 bg-black/65 text-white rounded-full p-1 hover:bg-red-600 transition-colors z-10"
                         >
                           <X className="w-3 h-3" />
                         </button>
@@ -490,8 +661,10 @@ function RecordContent() {
                 )}
               </div>
 
-              <p className="text-xs text-gray-500 mt-4">
-                เลือกเมื่อบ้านคุณคัดแยกชนิดนี้ ({images.length}/3 รูป)
+              <p className="text-xs text-gray-500 mt-3">
+                {isSelected
+                  ? `แนบแล้ว ${images.length}/3 รูป · ติ๊กเลือกอัตโนมัติ`
+                  : "แนบรูปถ่ายอย่างน้อย 1 รูปเพื่อเลือกชนิดนี้"}
               </p>
             </div>
           );
@@ -502,10 +675,16 @@ function RecordContent() {
       <div className="sticky bottom-4 z-20 bg-white/95 backdrop-blur-sm border border-gray-200 rounded-2xl p-4 md:px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-md">
         <div>
           <p className="font-bold text-gray-900 text-sm">
-            {selectedIds.length} ชนิดที่เลือก
+            {selectedIds.length} ชนิดที่มีรูปภาพ
+            {totalSelectedWeight > 0 && (
+              <span className="ml-2 text-[#085f46] font-semibold">
+                · น้ำหนักรวม{" "}
+                {totalSelectedWeight.toFixed(2).replace(/\.00$/, "")} กก.
+              </span>
+            )}
           </p>
           <p className="text-xs text-gray-500 mt-0.5">
-            บันทึกแทนกันได้ คะแนนไม่ซ้ำ
+            ต้องแนบรูปและระบุน้ำหนักทุกชนิดที่เลือก · คะแนนไม่ซ้ำ
           </p>
         </div>
 
@@ -527,19 +706,116 @@ function RecordContent() {
           <span>{submitting ? "กำลังบันทึก..." : "บันทึกการคัดแยก"}</span>
         </button>
       </div>
-    </div>
-  );
-}
 
-export default function RecordPage() {
-  return (
-    <Suspense fallback={
-      <div className="flex items-center justify-center min-h-screen bg-slate-50">
-        <Loader2 className="w-8 h-8 animate-spin text-green-600" />
-        <span className="ml-2 font-medium text-slate-600">กำลังโหลดหน้าบันทึก...</span>
-      </div>
-    }>
-      <RecordContent />
-    </Suspense>
+      {/* =========================================================
+          Modal Lightbox: แสดงรูปภาพขยายใหญ่ในหน้าเดิม
+      ========================================================= */}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setLightbox(null)}
+        >
+          <div
+            className="relative max-w-3xl w-full bg-white rounded-3xl overflow-hidden shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-100">
+              <div>
+                <h4 className="font-bold text-gray-900 text-sm">
+                  {lightbox.title}
+                </h4>
+                <p className="text-xs text-gray-500">
+                  รูปที่ {lightbox.index + 1} จาก {lightbox.images.length}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setLightbox(null)}
+                className="p-1.5 rounded-full text-gray-500 hover:text-gray-900 hover:bg-gray-100 transition-colors"
+                aria-label="ปิดหน้าต่างดูรูป"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="relative bg-gray-950 flex items-center justify-center h-[60vh] max-h-[520px]">
+              <img
+                src={lightbox.images[lightbox.index]}
+                alt={`${lightbox.title} ${lightbox.index + 1}`}
+                className="max-w-full max-h-full object-contain"
+              />
+
+              {lightbox.images.length > 1 && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setLightbox((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              index:
+                                (prev.index - 1 + prev.images.length) %
+                                prev.images.length,
+                            }
+                          : null
+                      )
+                    }
+                    className="absolute left-3 top-1/2 -translate-y-1/2 bg-white/90 hover:bg-white text-gray-900 rounded-full p-2 shadow-md transition-colors"
+                    aria-label="รูปก่อนหน้า"
+                  >
+                    <ChevronLeft className="w-5 h-5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setLightbox((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              index: (prev.index + 1) % prev.images.length,
+                            }
+                          : null
+                      )
+                    }
+                    className="absolute right-3 top-1/2 -translate-y-1/2 bg-white/90 hover:bg-white text-gray-900 rounded-full p-2 shadow-md transition-colors"
+                    aria-label="รูปถัดไป"
+                  >
+                    <ChevronRight className="w-5 h-5" />
+                  </button>
+                </>
+              )}
+            </div>
+
+            {lightbox.images.length > 1 && (
+              <div className="flex items-center justify-center gap-2 p-3 bg-gray-50">
+                {lightbox.images.map((imgUrl, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() =>
+                      setLightbox((prev) =>
+                        prev ? { ...prev, index: i } : null
+                      )
+                    }
+                    className={`w-12 h-12 rounded-lg overflow-hidden border-2 transition-all ${
+                      i === lightbox.index
+                        ? "border-[#085f46] scale-105"
+                        : "border-transparent opacity-60 hover:opacity-100"
+                    }`}
+                  >
+                    <img
+                      src={imgUrl}
+                      alt=""
+                      className="w-full h-full object-cover"
+                    />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

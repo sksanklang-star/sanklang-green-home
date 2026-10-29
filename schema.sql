@@ -34,6 +34,7 @@ CREATE TABLE waste_records (
   category_id TEXT NOT NULL,           -- 'food', 'leaves', 'plastic', 'paper', 'glass', 'can', 'general', 'hazardous'
   record_date TEXT NOT NULL,           -- วันที่คัดแยก รูปแบบ 'YYYY-MM-DD' เช่น '2026-10-22'
   images TEXT NOT NULL DEFAULT '[]',   -- เก็บ JSON Array ของ URL รูปภาพ เช่น '["url1.jpg","url2.jpg"]'
+  weight_kg REAL NOT NULL DEFAULT 0,
   points INTEGER NOT NULL DEFAULT 1,   -- 1 ชนิด = 1 คะแนน/วัน
   created_at TEXT DEFAULT (datetime('now', '+7 hours')),
   updated_at TEXT DEFAULT (datetime('now', '+7 hours')),
