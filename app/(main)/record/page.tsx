@@ -426,6 +426,14 @@ function RecordContent() {
     return sum + (Number.isFinite(val) && val > 0 ? val : 0);
   }, 0);
 
+  // 1. คำนวณวันที่สำหรับกำหนดช่วง (Format: YYYY-MM-DD)
+  const today = new Date();
+  const maxDate = today.toISOString().split('T')[0]; // วันนี้ (ค่ามากที่สุดที่เลือกได้)
+
+  const sevenDaysAgo = new Date();
+  sevenDaysAgo.setDate(today.getDate() - 7);
+  const minDate = sevenDaysAgo.toISOString().split('T')[0]; // 7 วันที่แล้ว (ค่าน้อยที่สุดที่เลือกได้)
+
   return (
     <div className="space-y-6 pb-4">
       {/* ส่วนหัวของหน้า */}
@@ -462,6 +470,8 @@ function RecordContent() {
               value={recordDate}
               onChange={(e) => setRecordDate(e.target.value)}
               className="w-full bg-white border border-gray-300 rounded-xl px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#085f46]/20 focus:border-[#085f46] transition-colors"
+              min={minDate} 
+              max={maxDate} 
             />
           </div>
           <div className="text-xs text-gray-500 space-y-1">
