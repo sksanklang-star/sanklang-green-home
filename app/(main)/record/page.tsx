@@ -311,7 +311,13 @@ function RecordContent() {
       // ล้าง Cache ของวันที่บันทึกและหน้าประวัติ เพื่อให้ดึงข้อมูลล่าสุดเสมอ
       sessionStorage.removeItem(`sanklang_rec_${household.id}_${recordDate}`);
       sessionStorage.removeItem(`sanklang_history_${household.id}`);
-
+      // ล้าง Cache หน้า community เมื่อมีการบันทึกขยะใหม่
+      Object.keys(sessionStorage).forEach((key) => {
+        if (key.startsWith("sanklang_comm_")) {
+          sessionStorage.removeItem(key);
+        }
+      });
+      
       // เด้งไปหน้าประวัติการบันทึกทันที
       router.push("/history");
     } catch (error) {

@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   Home,
   Camera,
@@ -24,8 +24,25 @@ export default function MainLayout({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
+  const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [householdLabel, setHouseholdLabel] = useState("0 · หมู่ 1");
+
+  useEffect(() => {
+    const saved = localStorage.getItem("sanklang_household");
+    if (!saved) {
+      // ถ้ายังไม่เคยเลือกบ้านเลย ให้กลับไปหน้าแรกเพื่อเลือกบ้านก่อน
+      router.replace("/");
+      return;
+    }
+    try {
+      const parsed = JSON.parse(saved);
+      if (parsed?.house_number && parsed?.moo) {
+        setHouseholdLabel(`${parsed.house_number} · หมู่ ${parsed.moo}`);
+      }
+    } catch {}
+  }, [pathname, router]);
 
   const navItems = [
     { name: "หน้าหลัก", href: "/home", icon: Home },
@@ -243,7 +260,7 @@ export default function MainLayout({
           <div className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm shrink-0">
             <Home className="w-4 h-4 text-gray-600 hidden xs:block shrink-0" />
             <span className="text-gray-800 font-medium whitespace-nowrap">
-              0 · หมู่ 1
+              {householdLabel}
             </span>
             <Link
               href="/"
