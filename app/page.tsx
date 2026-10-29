@@ -274,12 +274,6 @@ export default function App() {
 
               <div className="flex items-center justify-center gap-6">
                 <Link
-                  href="/community"
-                  className="text-[#125B41] font-semibold text-sm hover:underline"
-                >
-                  ดูแดชบอร์ด
-                </Link>
-                <Link
                   href="/admin"
                   className="text-[#125B41] font-semibold text-sm hover:underline"
                 >

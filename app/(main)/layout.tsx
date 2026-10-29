@@ -283,7 +283,7 @@ export default function MainLayout({
       </div>
 
       {/* ปุ่มลอย "ถามน้องอาสา" */}
-      <button
+      {/* <button
         type="button"
         onClick={() => alert("เปิดหน้าต่างแชทถามน้องอาสา")}
         className="fixed bottom-5 right-6 z-40 flex items-center gap-2.5 bg-[#085f46] hover:bg-[#064e39] text-white pl-2 pr-4 py-2 rounded-full shadow-lg hover:shadow-xl transition-all"
@@ -292,7 +292,7 @@ export default function MainLayout({
           <Bot className="w-6 h-6 text-[#085f46]" />
         </div>
         <span className="text-sm font-semibold">ถามน้องอาสา</span>
-      </button>
+      </button> */}
     </div>
   );
 }

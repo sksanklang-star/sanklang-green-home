@@ -387,13 +387,15 @@ export default function HomePage() {
               ถามวิธีใช้โปรแกรม หรือเรียนรู้เรื่องขยะกับน้องอาสา
             </p>
             <div>
-              <button
+              {/* <button
                 type="button"
                 onClick={() => alert("เปิดหน้าต่างแชทถามน้องอาสา")}
                 className="border border-gray-300 hover:bg-gray-50 text-gray-800 font-semibold text-xs px-4 py-2.5 rounded-xl transition-colors"
+                // disabled={loading}
+                disabled={true}
               >
                 ถามน้องอาสา
-              </button>
+              </button> */}
             </div>
           </div>
         </div>
