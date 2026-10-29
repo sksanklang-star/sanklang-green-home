@@ -1,45 +1,42 @@
-// ไฟล์: functions/api/household.ts
-
+// ไฟล์: functions/api/household.ts (ทำงานบน Cloudflare Pages จริง - Hardened Security)
 interface Env {
   DB: any; // Cloudflare D1 Binding
-  TURNSTILE_SECRET_KEY?: string; // (ทางเลือก) ใส่ใน Cloudflare Env เมื่อต้องการเปิดโหมดเข้มงวดสูงสุด
 }
 
-// ระบบ Rate Limit ในหน่วยความจำของ Edge Worker (แยกตาม IP และประเภทคำสั่ง)
 const rateLimitStore = new Map<string, { count: number; resetTime: number }>();
 
 function checkRateLimit(ip: string, action: string, limit: number, windowMs: number): boolean {
   const now = Date.now();
-  const key = `${ip}:${action}`;
-  const record = rateLimitStore.get(key);
-
-  // ล้างข้อมูลเก่าเพื่อไม่ให้ Memory เต็ม
   if (rateLimitStore.size > 5000) {
     for (const [k, v] of rateLimitStore.entries()) {
       if (now > v.resetTime) rateLimitStore.delete(k);
     }
   }
 
+  const key = `${ip}:${action}`;
+  const record = rateLimitStore.get(key);
+
   if (!record || now > record.resetTime) {
     rateLimitStore.set(key, { count: 1, resetTime: now + windowMs });
     return true;
   }
-
-  if (record.count >= limit) {
-    return false; // เกินโควตา บล็อกทันที
-  }
-
+  if (record.count >= limit) return false;
   record.count += 1;
   return true;
 }
 
-// ตรวจสอบรูปแบบบ้านเลขที่: อนุญาตเฉพาะตัวเลขอารบิก 0-9 และเครื่องหมาย / เท่านั้น (เช่น 100, 125/3)
 const HOUSE_NO_REGEX = /^[0-9]{1,5}(\/[0-9]{1,4})?$/;
+
+// 🔒 ตรวจสอบพิกัดให้อยู่ในเขตจังหวัดเชียงใหม่ / สันกลาง-สันกำแพง
+function isValidChiangMaiCoord(lat: number, lng: number): boolean {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+  return lat >= 18.5 && lat <= 19.1 && lng >= 98.8 && lng <= 99.3;
+}
 
 export const onRequestPost = async (context: { request: Request; env: Env }) => {
   const { request, env } = context;
 
-  // 1. ป้องกันการยิงข้ามโดเมน (CSRF / External Script Attack)
+  // 1. ป้องกันการยิงข้ามโดเมน (CSRF)
   const origin = request.headers.get("Origin") || "";
   const host = request.headers.get("Host") || "";
   if (origin && !origin.includes(host) && !origin.includes("localhost")) {
@@ -49,14 +46,20 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
     });
   }
 
-  // ดึง IP จริงของผู้ใช้งานจาก Cloudflare Header
+  if (!env.DB) {
+    return new Response(
+      JSON.stringify({ error: "ยังไม่ได้ผูก D1 Binding ชื่อ 'DB' บน Cloudflare Pages" }),
+      { status: 500, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
   const clientIp = request.headers.get("CF-Connecting-IP") || "127.0.0.1";
 
   try {
     const body: any = await request.json();
-    const { action, houseNumber, moo, website_hp } = body;
+    const { action, website_hp } = body;
 
-    // 2. Honeypot Trap: ถ้าช่องดักบอทมีค่าส่งมา แปลว่าเป็นสคริปต์ยิงถล่ม
+    // 2. Honeypot Trap
     if (website_hp) {
       return new Response(JSON.stringify({ error: "ตรวจพบพฤติกรรมผิดปกติ" }), {
         status: 400,
@@ -64,29 +67,10 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
       });
     }
 
-    // 3. ตรวจสอบความถูกต้องของข้อมูล (Strict Input Validation)
-    const cleanHouseNo = String(houseNumber || "").trim();
-    const cleanMoo = Number(moo);
-
-    if (!HOUSE_NO_REGEX.test(cleanHouseNo)) {
-      return new Response(
-        JSON.stringify({ error: "รูปแบบบ้านเลขที่ไม่ถูกต้อง (ใช้เลขอารบิก 0-9 และ / เท่านั้น)" }),
-        { status: 400, headers: { "Content-Type": "application/json" } }
-      );
-    }
-
-    if (!Number.isInteger(cleanMoo) || cleanMoo < 1 || cleanMoo > 7) {
-      return new Response(
-        JSON.stringify({ error: "กรุณาเลือกหมู่ที่ 1 ถึง 7 เท่านั้น" }),
-        { status: 400, headers: { "Content-Type": "application/json" } }
-      );
-    }
-
     // =========================================================
-    // โหมดที่ 1: เช็คว่ามีบ้านนี้ในระบบหรือยัง (action === "check")
+    // โหมดที่ 1: เช็คบ้านตอน Login (action === "check")
     // =========================================================
     if (action === "check") {
-      // จำกัดการค้นหาไม่เกิน 12 ครั้ง ต่อ 1 นาที ต่อ 1 IP
       if (!checkRateLimit(clientIp, "check", 12, 60 * 1000)) {
         return new Response(
           JSON.stringify({ error: "คุณทำรายการเร็วเกินไป กรุณารอสักครู่แล้วลองใหม่ค่ะ" }),
@@ -94,31 +78,39 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
         );
       }
 
+      const cleanHouseNo = String(body.houseNumber || "").trim();
+      const cleanMoo = Number(body.moo);
+
+      if (!HOUSE_NO_REGEX.test(cleanHouseNo) || !Number.isInteger(cleanMoo) || cleanMoo < 1 || cleanMoo > 7) {
+        return new Response(
+          JSON.stringify({ error: "ข้อมูลบ้านเลขที่หรือหมู่ไม่ถูกต้อง" }),
+          { status: 400, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
       const existing = await env.DB.prepare(
-        "SELECT id, house_number, moo, qgis_id FROM households WHERE house_number = ?1 AND moo = ?2 LIMIT 1"
+        "SELECT id, house_number, moo, qgis_id, lat, lng FROM households WHERE house_number = ?1 AND moo = ?2 LIMIT 1"
       )
         .bind(cleanHouseNo, cleanMoo)
         .first();
 
       if (existing) {
-        return new Response(
-          JSON.stringify({ exists: true, household: existing }),
-          { status: 200, headers: { "Content-Type": "application/json" } }
-        );
+        return new Response(JSON.stringify({ exists: true, household: existing }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
       }
 
-      // ถ้ายังไม่พบบ้านนี้ ให้ส่ง exists: false เพื่อให้หน้าบ้านเด้ง Modal ยืนยัน
-      return new Response(
-        JSON.stringify({ exists: false }),
-        { status: 200, headers: { "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ exists: false }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
     }
 
     // =========================================================
-    // โหมดที่ 2: ยืนยันเพิ่มครัวเรือนใหม่ลงฐานข้อมูล (action === "create")
+    // โหมดที่ 2: สร้างบ้านใหม่ตอน Login (action === "create")
     // =========================================================
     if (action === "create") {
-      // จำกัดการสร้างบ้านใหม่เข้มงวดพิเศษ: ไม่เกิน 3 ครั้ง ต่อ 10 นาที ต่อ 1 IP (ป้องกันการปั๊มบ้านปลอม)
       if (!checkRateLimit(clientIp, "create", 3, 10 * 60 * 1000)) {
         return new Response(
           JSON.stringify({ error: "เพิ่มข้อมูลครัวเรือนเกินกำหนด กรุณารอ 10 นาที" }),
@@ -126,25 +118,142 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
         );
       }
 
-      // บันทึกครัวเรือนใหม่ (หากมีคนกดซ้ำพร้อมกัน จะไม่ Error ด้วย ON CONFLICT)
+      const cleanHouseNo = String(body.houseNumber || "").trim();
+      const cleanMoo = Number(body.moo);
+
+      if (!HOUSE_NO_REGEX.test(cleanHouseNo) || !Number.isInteger(cleanMoo) || cleanMoo < 1 || cleanMoo > 7) {
+        return new Response(
+          JSON.stringify({ error: "ข้อมูลบ้านเลขที่หรือหมู่ไม่ถูกต้อง" }),
+          { status: 400, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
       await env.DB.prepare(
-        `INSERT INTO households (house_number, moo) 
-         VALUES (?1, ?2) 
-         ON CONFLICT(house_number, moo) DO NOTHING`
+        "INSERT INTO households (house_number, moo) VALUES (?1, ?2) ON CONFLICT(house_number, moo) DO NOTHING"
       )
         .bind(cleanHouseNo, cleanMoo)
         .run();
 
       const created = await env.DB.prepare(
-        "SELECT id, house_number, moo, qgis_id FROM households WHERE house_number = ?1 AND moo = ?2 LIMIT 1"
+        "SELECT id, house_number, moo, qgis_id, lat, lng FROM households WHERE house_number = ?1 AND moo = ?2 LIMIT 1"
       )
         .bind(cleanHouseNo, cleanMoo)
         .first();
 
-      return new Response(
-        JSON.stringify({ success: true, household: created }),
-        { status: 201, headers: { "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ success: true, household: created }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // =========================================================
+    // โหมดที่ 3: ดึงข้อมูลบ้านล่าสุดตาม ID (action === "get_info")
+    // =========================================================
+    if (action === "get_info") {
+      if (!checkRateLimit(clientIp, "get_info", 30, 60 * 1000)) {
+        return new Response(JSON.stringify({ error: "เรียกข้อมูลถี่เกินไป" }), { status: 429 });
+      }
+
+      const householdId = Number(body.householdId);
+      if (!Number.isInteger(householdId) || householdId <= 0 || householdId > 999999) {
+        return new Response(JSON.stringify({ error: "รหัสครัวเรือนไม่ถูกต้อง" }), { status: 400 });
+      }
+
+      const household = await env.DB.prepare(
+        "SELECT id, house_number, moo, qgis_id, lat, lng FROM households WHERE id = ?1 LIMIT 1"
+      )
+        .bind(householdId)
+        .first();
+
+      if (!household) {
+        return new Response(JSON.stringify({ error: "ไม่พบข้อมูลบ้าน" }), { status: 404 });
+      }
+
+      return new Response(JSON.stringify({ household }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // =========================================================
+    // โหมดที่ 4: บันทึกพิกัดบ้าน lat, lng (action === "update_location")
+    // =========================================================
+    if (action === "update_location") {
+      if (!checkRateLimit(clientIp, "update_loc", 6, 60 * 1000)) {
+        return new Response(
+          JSON.stringify({ error: "บันทึกพิกัดถี่เกินไป กรุณารอสักครู่" }),
+          { status: 429, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      const householdId = Number(body.householdId);
+      const lat = Number(Number(body.lat).toFixed(6));
+      const lng = Number(Number(body.lng).toFixed(6));
+
+      if (!Number.isInteger(householdId) || householdId <= 0 || householdId > 999999) {
+        return new Response(JSON.stringify({ error: "รหัสครัวเรือนไม่ถูกต้อง" }), { status: 400 });
+      }
+
+      if (!isValidChiangMaiCoord(lat, lng)) {
+        return new Response(
+          JSON.stringify({ error: "พิกัดอยู่นอกเขตพื้นที่จังหวัดเชียงใหม่ กรุณาตรวจสอบตำแหน่งอีกครั้ง" }),
+          { status: 400, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      await env.DB.prepare("UPDATE households SET lat = ?1, lng = ?2 WHERE id = ?3")
+        .bind(lat, lng, householdId)
+        .run();
+
+      const updated = await env.DB.prepare(
+        "SELECT id, house_number, moo, qgis_id, lat, lng FROM households WHERE id = ?1 LIMIT 1"
+      )
+        .bind(householdId)
+        .first();
+
+      return new Response(JSON.stringify({ success: true, household: updated }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // =========================================================
+    // โหมดที่ 5: แจ้งข้อมูลบ้านไม่ถูกต้อง (action === "report_issue")
+    // =========================================================
+    if (action === "report_issue") {
+      // จำกัดไม่เกิน 3 ครั้ง ต่อ 10 นาที ต่อ 1 IP ป้องกันบอทยิงสแปมกล่องข้อความเจ้าหน้าที่
+      if (!checkRateLimit(clientIp, "report_issue", 3, 10 * 60 * 1000)) {
+        return new Response(
+          JSON.stringify({ error: "คุณส่งเรื่องแจ้งเจ้าหน้าที่แล้ว กรุณารอ 10 นาทีก่อนส่งซ้ำค่ะ" }),
+          { status: 429, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      const householdId = Number(body.householdId);
+      const cleanDetail = String(body.detail || "")
+        .replace(/[<>]/g, "")
+        .trim()
+        .slice(0, 500);
+
+      if (!Number.isInteger(householdId) || householdId <= 0 || householdId > 999999) {
+        return new Response(JSON.stringify({ error: "รหัสครัวเรือนไม่ถูกต้อง" }), { status: 400 });
+      }
+
+      if (cleanDetail.length < 3) {
+        return new Response(
+          JSON.stringify({ error: "กรุณาระบุรายละเอียดอย่างน้อย 3 ตัวอักษร" }),
+          { status: 400, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      await env.DB.prepare("INSERT INTO household_reports (household_id, detail) VALUES (?1, ?2)")
+        .bind(householdId, cleanDetail)
+        .run();
+
+      return new Response(JSON.stringify({ success: true }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      });
     }
 
     return new Response(JSON.stringify({ error: "คำสั่งไม่ถูกต้อง" }), { status: 400 });
