@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Camera,
@@ -153,7 +153,7 @@ function fileToBase64(file: File): Promise<string> {
 
 const CACHE_TTL_MS = 60 * 1000;
 
-export default function RecordPage() {
+function RecordContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -817,5 +817,20 @@ export default function RecordPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function RecordPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="py-20 flex flex-col items-center justify-center text-gray-400">
+          <Loader2 className="w-6 h-6 animate-spin text-[#085f46] mb-2" />
+          <p className="text-xs">กำลังโหลดหน้าบันทึกขยะ...</p>
+        </div>
+      }
+    >
+      <RecordContent />
+    </Suspense>
   );
 }
