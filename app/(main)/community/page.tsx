@@ -7,6 +7,7 @@ import {
   Users,
   Leaf,
   Recycle,
+  Scale,
   ChevronDown,
   Loader2,
 } from "lucide-react";
@@ -24,6 +25,7 @@ interface VillageStat {
   participating: number;
   percent: number;
   records: number;
+  weightKg: number;
 }
 
 const WASTE_CATEGORIES_META: WasteCategoryMeta[] = [
@@ -38,13 +40,13 @@ const WASTE_CATEGORIES_META: WasteCategoryMeta[] = [
 ];
 
 const INITIAL_VILLAGES: VillageStat[] = [
-  { moo: 1, totalHouseholds: 1000, participating: 0, percent: 0, records: 0 },
-  { moo: 2, totalHouseholds: 1000, participating: 0, percent: 0, records: 0 },
-  { moo: 3, totalHouseholds: 700, participating: 0, percent: 0, records: 0 },
-  { moo: 4, totalHouseholds: 700, participating: 0, percent: 0, records: 0 },
-  { moo: 5, totalHouseholds: 900, participating: 0, percent: 0, records: 0 },
-  { moo: 6, totalHouseholds: 600, participating: 0, percent: 0, records: 0 },
-  { moo: 7, totalHouseholds: 500, participating: 0, percent: 0, records: 0 },
+  { moo: 1, totalHouseholds: 1000, participating: 0, percent: 0, records: 0, weightKg: 0 },
+  { moo: 2, totalHouseholds: 1000, participating: 0, percent: 0, records: 0, weightKg: 0 },
+  { moo: 3, totalHouseholds: 700, participating: 0, percent: 0, records: 0, weightKg: 0 },
+  { moo: 4, totalHouseholds: 700, participating: 0, percent: 0, records: 0, weightKg: 0 },
+  { moo: 5, totalHouseholds: 900, participating: 0, percent: 0, records: 0, weightKg: 0 },
+  { moo: 6, totalHouseholds: 600, participating: 0, percent: 0, records: 0, weightKg: 0 },
+  { moo: 7, totalHouseholds: 500, participating: 0, percent: 0, records: 0, weightKg: 0 },
 ];
 
 const THAI_MONTHS = [
@@ -70,10 +72,17 @@ function formatThaiTimestamp(isoStr: string): string {
   return `${day}/${month}/${year} ${hh}:${mm}:${ss}`;
 }
 
-const CACHE_TTL_MS = 2 * 60 * 1000; // เก็บ Cache ไว้ 2 นาที
+function formatKg(val: number): string {
+  const num = Number(val) || 0;
+  return num.toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  });
+}
+
+const CACHE_TTL_MS = 2 * 60 * 1000;
 
 export default function CommunityPage() {
-  // ค่าในช่อง Input ตัวกรอง (ยังไม่ยิง API จนกว่าจะกดปุ่ม "แสดงผล")
   const [startDate, setStartDate] = useState(() => {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
@@ -83,7 +92,6 @@ export default function CommunityPage() {
   );
   const [area, setArea] = useState("all");
 
-  // ค่าตัวกรองที่กดยืนยันแล้ว
   const [appliedFilter, setAppliedFilter] = useState(() => {
     const now = new Date();
     return {
@@ -93,43 +101,58 @@ export default function CommunityPage() {
     };
   });
 
-  const [metricType, setMetricType] = useState<"households" | "records">("households");
+  // รองรับการสลับดู 3 รูปแบบ: จำนวนครัวเรือน | จำนวนรายการ | ปริมาณขยะ (กก.)
+  const [metricType, setMetricType] = useState<
+    "households" | "records" | "weightKg"
+  >("households");
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
   const [lastClickTime, setLastClickTime] = useState(0);
 
-  // ข้อมูลสถิติที่ดึงมาจาก API
   const [summary, setSummary] = useState({
     participatingHouseholds: 0,
     baseHouseholds: 5400,
     participationPercent: 0,
     totalRecords: 0,
+    totalWeightKg: 0,
   });
   const [categoryStats, setCategoryStats] = useState<
-    Record<string, { households: number; records: number }>
+    Record<string, { households: number; records: number; weightKg: number }>
   >({});
-  const [villageStats, setVillageStats] = useState<VillageStat[]>(INITIAL_VILLAGES);
+  const [villageStats, setVillageStats] =
+    useState<VillageStat[]>(INITIAL_VILLAGES);
   const [updatedAtText, setUpdatedAtText] = useState("");
 
-  // เปอร์เซ็นต์การมีส่วนร่วมสำหรับคุมวิดีโอต้นไม้ (0 - 100)
   const treePercent = summary.participationPercent;
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const VIDEO_DURATION = 10; // ความยาววิดีโอเต็ม 10 วินาที
+  const VIDEO_DURATION = 10;
 
-  // คำนวณวินาทีที่ต้องหยุดจาก % (เช่น 0% = 0 วิ, 50% = 5 วิ, 100% = 10 วิ)
   const targetStopTime =
     (Math.min(Math.max(treePercent, 0), 100) / 100) * VIDEO_DURATION;
 
-  // ฟังก์ชันนำข้อมูลที่ได้มาอัปเดตลง State
   const applyData = useCallback((data: any) => {
-    if (data?.summary) setSummary(data.summary);
+    if (data?.summary) {
+      setSummary({
+        participatingHouseholds: Number(data.summary.participatingHouseholds) || 0,
+        baseHouseholds: Number(data.summary.baseHouseholds) || 5400,
+        participationPercent: Number(data.summary.participationPercent) || 0,
+        totalRecords: Number(data.summary.totalRecords) || 0,
+        totalWeightKg: Number(data.summary.totalWeightKg) || 0,
+      });
+    }
     if (data?.categoryStats) setCategoryStats(data.categoryStats);
-    if (Array.isArray(data?.villageStats)) setVillageStats(data.villageStats);
+    if (Array.isArray(data?.villageStats)) {
+      setVillageStats(
+        data.villageStats.map((v: any) => ({
+          ...v,
+          weightKg: Number(v.weightKg) || 0,
+        }))
+      );
+    }
     setUpdatedAtText(formatThaiTimestamp(data?.updatedAt));
   }, []);
 
-  // ดึงข้อมูลเมื่อ appliedFilter เปลี่ยน (พร้อมระบบ Cache กันการกดซ้ำ)
   useEffect(() => {
     const { startDate: s, endDate: e, area: a } = appliedFilter;
     const cacheKey = `sanklang_comm_${s}_${e}_${a}`;
@@ -138,7 +161,10 @@ export default function CommunityPage() {
     if (cachedRaw) {
       try {
         const cached = JSON.parse(cachedRaw);
-        if (Date.now() - cached.timestamp < CACHE_TTL_MS && cached.payload) {
+        if (
+          Date.now() - cached.timestamp < CACHE_TTL_MS &&
+          cached.payload?.summary?.totalWeightKg !== undefined
+        ) {
           applyData(cached.payload);
           setLoading(false);
           return;
@@ -178,7 +204,6 @@ export default function CommunityPage() {
     return () => controller.abort();
   }, [appliedFilter, applyData]);
 
-  // กดปุ่ม "แสดงผล" (มี Debounce 1 วินาที กันคนกดรัวๆ)
   const handleApplyFilter = () => {
     const now = Date.now();
     if (now - lastClickTime < 1000) return;
@@ -196,7 +221,6 @@ export default function CommunityPage() {
     setAppliedFilter({ startDate, endDate, area });
   };
 
-  // สั่งเล่นหรือหยุดวิดีโอเมื่อค่าเปอร์เซ็นต์เปลี่ยน
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -220,17 +244,32 @@ export default function CommunityPage() {
     }
   };
 
-  // คำนวณรายการขยะทั้ง 8 ชนิดตามโหมดที่เลือก (จำนวนครัวเรือน หรือ จำนวนรายการ)
+  // คำนวณตัวเลขของขยะทั้ง 8 ชนิดตามโหมดที่ผู้ใช้เลือก (ครัวเรือน / รายการ / กิโลกรัม)
   const wasteStatsList = useMemo(() => {
     return WASTE_CATEGORIES_META.map((meta) => {
-      const stat = categoryStats[meta.id] || { households: 0, records: 0 };
-      const count = metricType === "households" ? stat.households : stat.records;
-      return { ...meta, count };
+      const stat = categoryStats[meta.id] || {
+        households: 0,
+        records: 0,
+        weightKg: 0,
+      };
+      const value =
+        metricType === "households"
+          ? stat.households
+          : metricType === "records"
+          ? stat.records
+          : stat.weightKg;
+      return {
+        ...meta,
+        value,
+        weightKg: stat.weightKg,
+        households: stat.households,
+        records: stat.records,
+      };
     });
   }, [categoryStats, metricType]);
 
-  const maxWasteCount = useMemo(() => {
-    return Math.max(...wasteStatsList.map((item) => item.count), 1);
+  const maxWasteValue = useMemo(() => {
+    return Math.max(...wasteStatsList.map((item) => item.value), 1);
   }, [wasteStatsList]);
 
   const areaLabel =
@@ -250,7 +289,7 @@ export default function CommunityPage() {
             ผลรวมชุมชน
           </h2>
           <p className="text-sm text-gray-500 mt-1">
-            เลือกช่วงวันที่และพื้นที่ เพื่อดูผลการมีส่วนร่วม
+            เลือกช่วงวันที่และพื้นที่ เพื่อดูผลการมีส่วนร่วมและปริมาณขยะ
           </p>
         </div>
 
@@ -267,7 +306,6 @@ export default function CommunityPage() {
       {/* 2. กล่องตัวกรองวันที่และพื้นที่ */}
       <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
         <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
-          {/* วันเริ่มต้น */}
           <div className="md:col-span-4 space-y-1.5">
             <label className="block text-xs font-bold text-gray-900">
               วันเริ่มต้น
@@ -280,7 +318,6 @@ export default function CommunityPage() {
             />
           </div>
 
-          {/* วันสิ้นสุด */}
           <div className="md:col-span-4 space-y-1.5">
             <label className="block text-xs font-bold text-gray-900">
               วันสิ้นสุด
@@ -293,7 +330,6 @@ export default function CommunityPage() {
             />
           </div>
 
-          {/* พื้นที่ + ปุ่มแสดงผล */}
           <div className="md:col-span-4 flex flex-col sm:flex-row items-stretch sm:items-end gap-2.5">
             <div className="flex-1 space-y-1.5">
               <label className="block text-xs font-bold text-gray-900">
@@ -334,15 +370,13 @@ export default function CommunityPage() {
           </div>
         </div>
 
-        {errorMsg && (
-          <p className="text-xs text-red-600 mt-3">{errorMsg}</p>
-        )}
+        {errorMsg && <p className="text-xs text-red-600 mt-3">{errorMsg}</p>}
       </div>
 
       {/* 3. แถบแจ้งเตือนข้อมูลสาธิตและช่วงเวลาที่แสดง */}
       <div className="space-y-3">
         <div className="bg-[#fdf6e2] border border-[#f5e2a8] text-gray-800 text-xs px-4 py-3 rounded-xl">
-          ใช้จำนวนครัวเรือนสมมติสำหรับสาธิต · ฐานทั้งตำบล 5,400 ครัวเรือน (หรือค่าที่เจ้าหน้าที่ปรับ) · ผู้เข้าร่วมและรายการด้านล่างมาจากข้อมูลที่บันทึกในระบบ
+          ใช้จำนวนครัวเรือนสมมติสำหรับสาธิต · ฐานทั้งตำบล 5,400 ครัวเรือน (หรือค่าที่เจ้าหน้าที่ปรับ) · ผู้เข้าร่วม รายการ และน้ำหนักขยะด้านล่างมาจากข้อมูลที่บันทึกในระบบ
         </div>
         <p className="text-xs text-gray-500">
           ผลที่แสดง: {areaLabel} · {formatThaiShortDate(appliedFilter.startDate)} –{" "}
@@ -350,8 +384,9 @@ export default function CommunityPage() {
         </p>
       </div>
 
-      {/* 4. การ์ดสรุปผล 3 ช่อง */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      {/* 4. การ์ดสรุปผล 4 ช่อง (เพิ่มการ์ดปริมาณขยะรวมเป็นกิโลกรัม) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* การ์ดที่ 1: ครัวเรือนที่ร่วมบันทึก */}
         <div className="bg-white border border-gray-200 rounded-2xl p-5 flex flex-col justify-between">
           <div className="flex items-center justify-between text-gray-500 text-xs font-medium">
             <span>ครัวเรือนที่ร่วมบันทึก</span>
@@ -366,13 +401,16 @@ export default function CommunityPage() {
           <p className="text-xs text-gray-500">นับบ้านไม่ซ้ำในช่วงวันที่เลือก</p>
         </div>
 
+        {/* การ์ดที่ 2: สัดส่วนการมีส่วนร่วม */}
         <div className="bg-white border border-gray-200 rounded-2xl p-5 flex flex-col justify-between">
           <div className="flex items-center justify-between text-gray-500 text-xs font-medium">
             <span>สัดส่วนการมีส่วนร่วม</span>
             <Leaf className="w-4 h-4 text-gray-400" />
           </div>
           <div className="my-3 flex items-baseline gap-1.5">
-            <span className="text-3xl font-bold text-gray-900">{treePercent}</span>
+            <span className="text-3xl font-bold text-gray-900">
+              {treePercent}
+            </span>
             <span className="text-sm font-medium text-gray-700">เปอร์เซ็นต์</span>
           </div>
           <p className="text-xs text-gray-500">
@@ -380,6 +418,7 @@ export default function CommunityPage() {
           </p>
         </div>
 
+        {/* การ์ดที่ 3: รายการคัดแยก */}
         <div className="bg-white border border-gray-200 rounded-2xl p-5 flex flex-col justify-between">
           <div className="flex items-center justify-between text-gray-500 text-xs font-medium">
             <span>รายการคัดแยก</span>
@@ -393,6 +432,21 @@ export default function CommunityPage() {
           </div>
           <p className="text-xs text-gray-500">บ้านเดียว–ชนิดเดียว–วันเดียว = 1</p>
         </div>
+
+        {/* การ์ดที่ 4: ปริมาณขยะที่คัดแยกรวม (กิโลกรัม) */}
+        <div className="bg-white border border-gray-200 rounded-2xl p-5 flex flex-col justify-between">
+          <div className="flex items-center justify-between text-gray-500 text-xs font-medium">
+            <span>ปริมาณขยะที่คัดแยก</span>
+            <Scale className="w-4 h-4 text-[#085f46]" />
+          </div>
+          <div className="my-3 flex items-baseline gap-1.5">
+            <span className="text-3xl font-bold text-[#085f46]">
+              {formatKg(summary.totalWeightKg)}
+            </span>
+            <span className="text-sm font-medium text-gray-700">กิโลกรัม</span>
+          </div>
+          <p className="text-xs text-gray-500">น้ำหนักรวมทุกชนิดขยะที่บันทึก</p>
+        </div>
       </div>
 
       {/* 5. ส่วนต้นไม้ของตำบลสันกลาง (ซ้าย) และ การคัดแยกแต่ละชนิด (ขวา) */}
@@ -403,7 +457,6 @@ export default function CommunityPage() {
             ต้นไม้ของตำบลสันกลาง
           </span>
 
-          {/* พื้นที่สำหรับใส่วิดีโอความยาว 10 วินาที */}
           <div className="my-6 w-56 h-56 sm:w-64 sm:h-64 rounded-2xl bg-gray-50 border border-dashed border-gray-200 flex items-center justify-center overflow-hidden relative">
             <video
               ref={videoRef}
@@ -428,7 +481,8 @@ export default function CommunityPage() {
             </div>
             <p className="text-xs text-gray-500">
               {summary.participatingHouseholds.toLocaleString()} จาก{" "}
-              {summary.baseHouseholds.toLocaleString()} ครัวเรือนร่วมคัดแยก
+              {summary.baseHouseholds.toLocaleString()} ครัวเรือนร่วมคัดแยก · รวม{" "}
+              {formatKg(summary.totalWeightKg)} กก.
             </p>
 
             <div className="mt-4 bg-[#eef3e3]/80 rounded-xl p-3.5 text-xs text-gray-700 space-y-1">
@@ -442,7 +496,7 @@ export default function CommunityPage() {
           </div>
         </div>
 
-        {/* การ์ดขวา: การคัดแยกแต่ละชนิด */}
+        {/* การ์ดขวา: การคัดแยกแต่ละชนิด (เลือกดูได้ทั้ง ครัวเรือน / รายการ / กิโลกรัม) */}
         <div className="lg:col-span-5 bg-white border border-gray-200 rounded-2xl p-6 flex flex-col justify-between">
           <div className="space-y-4">
             <h3 className="font-bold text-gray-900 text-lg">
@@ -453,12 +507,15 @@ export default function CommunityPage() {
               <select
                 value={metricType}
                 onChange={(e) =>
-                  setMetricType(e.target.value as "households" | "records")
+                  setMetricType(
+                    e.target.value as "households" | "records" | "weightKg"
+                  )
                 }
                 className="w-full appearance-none bg-white border border-gray-300 rounded-xl px-3.5 py-2.5 pr-9 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-[#085f46]/20 focus:border-[#085f46]"
               >
                 <option value="households">จำนวนครัวเรือน</option>
                 <option value="records">จำนวนรายการ</option>
+                <option value="weightKg">ปริมาณขยะ (กิโลกรัม)</option>
               </select>
               <ChevronDown className="w-4 h-4 text-gray-400 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             </div>
@@ -467,7 +524,7 @@ export default function CommunityPage() {
             <div className="space-y-3.5 pt-1">
               {wasteStatsList.map((item) => {
                 const widthPercent =
-                  item.count > 0 ? (item.count / maxWasteCount) * 100 : 0;
+                  item.value > 0 ? (item.value / maxWasteValue) * 100 : 0;
 
                 return (
                   <div key={item.id} className="space-y-1.5">
@@ -476,9 +533,18 @@ export default function CommunityPage() {
                         <span>{item.emoji}</span>
                         <span>{item.name}</span>
                       </span>
-                      <span className="font-bold text-gray-900">
-                        {item.count.toLocaleString()}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        {metricType !== "weightKg" && item.weightKg > 0 && (
+                          <span className="text-[11px] text-gray-500">
+                            ({formatKg(item.weightKg)} กก.)
+                          </span>
+                        )}
+                        <span className="font-bold text-gray-900">
+                          {metricType === "weightKg"
+                            ? `${formatKg(item.value)} กก.`
+                            : item.value.toLocaleString()}
+                        </span>
+                      </div>
                     </div>
                     <div className="w-full h-2.5 bg-[#ecefe8] rounded-full overflow-hidden">
                       <div
@@ -493,7 +559,13 @@ export default function CommunityPage() {
           </div>
 
           <p className="text-xs text-gray-500 pt-5">
-            หน่วย: {metricType === "households" ? "ครัวเรือน" : "รายการ"} · ไม่ใช่น้ำหนักขยะ
+            หน่วย:{" "}
+            {metricType === "households"
+              ? "ครัวเรือน"
+              : metricType === "records"
+              ? "รายการ"
+              : "กิโลกรัม (กก.)"}{" "}
+            · น้ำหนักรวมทั้งสิ้น {formatKg(summary.totalWeightKg)} กก.
           </p>
         </div>
       </div>
@@ -512,11 +584,13 @@ export default function CommunityPage() {
         {/* แถบสรุปหมู่บ้านแนวนอน */}
         <div
           className={`grid grid-cols-2 sm:grid-cols-4 ${
-            villageStats.length > 1 ? "md:grid-cols-7" : "md:grid-cols-1 max-w-xs"
+            villageStats.length > 1
+              ? "md:grid-cols-7"
+              : "md:grid-cols-1 max-w-xs"
           } gap-4 pt-6`}
         >
           {villageStats.map((v) => (
-            <div key={v.moo} className="text-center space-y-2">
+            <div key={v.moo} className="text-center space-y-1.5">
               <div className="text-xs font-bold text-gray-900">
                 {v.percent}%
               </div>
@@ -526,17 +600,18 @@ export default function CommunityPage() {
                   style={{ width: `${Math.min(Math.max(v.percent, 8), 100)}%` }}
                 />
               </div>
-              <div className="text-xs text-gray-800 font-medium">
+              <div className="text-xs text-gray-800 font-medium pt-0.5">
                 หมู่ {v.moo}
               </div>
               <div className="text-xs text-gray-500">
-                {v.participating.toLocaleString()} บ้าน
+                {v.participating.toLocaleString()} บ้าน · {formatKg(v.weightKg)}{" "}
+                กก.
               </div>
             </div>
           ))}
         </div>
 
-        {/* ตารางข้อมูลรายหมู่บ้าน */}
+        {/* ตารางข้อมูลรายหมู่บ้าน (เพิ่มคอลัมน์ น้ำหนักรวม กก.) */}
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse text-xs sm:text-sm">
             <thead>
@@ -545,7 +620,8 @@ export default function CommunityPage() {
                 <th className="py-3 px-4 font-medium">ฐานครัวเรือน</th>
                 <th className="py-3 px-4 font-medium">เข้าร่วม</th>
                 <th className="py-3 px-4 font-medium">เปอร์เซ็นต์</th>
-                <th className="py-3 pl-4 font-medium">รายการ / คะแนน</th>
+                <th className="py-3 px-4 font-medium">รายการ / คะแนน</th>
+                <th className="py-3 pl-4 font-medium">น้ำหนักรวม (กก.)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200 text-gray-900">
@@ -559,7 +635,10 @@ export default function CommunityPage() {
                     {v.participating.toLocaleString()}
                   </td>
                   <td className="py-3.5 px-4">{v.percent}%</td>
-                  <td className="py-3.5 pl-4">{v.records.toLocaleString()}</td>
+                  <td className="py-3.5 px-4">{v.records.toLocaleString()}</td>
+                  <td className="py-3.5 pl-4 font-semibold text-[#085f46]">
+                    {formatKg(v.weightKg)} กก.
+                  </td>
                 </tr>
               ))}
             </tbody>

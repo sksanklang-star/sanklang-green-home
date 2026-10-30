@@ -198,7 +198,7 @@ export default function HomePage() {
             สันกลางน่าอยู่ขึ้นทุกวัน
           </h3>
           <p className="text-xs md:text-sm text-gray-100/90">
-            ไม่ต้องชั่งน้ำหนัก แค่เลือกขยะ ถ่ายรูป แล้วบันทึก
+            แค่เลือกขยะ ถ่ายรูป แล้วบันทึก
           </p>
           <div className="pt-2">
             <Link

@@ -96,7 +96,7 @@ const WASTE_CATEGORIES: WasteCategory[] = [
   {
     id: "hazardous",
     title: "ขยะอันตราย",
-    subtitle: "ถ่านไฟฉาย หลอดไฟ และสารเคมี",
+    subtitle: "ถ่านไฟฉาย หลอดไฟ และกระป๋อง/ภาชนะบรรจุสารเคมี (ภาชนะเท่านั้น)",
     emoji: "🔋",
     topBorderColor: "border-t-[#c85a42]",
     iconBgColor: "bg-[#fcebe8]",

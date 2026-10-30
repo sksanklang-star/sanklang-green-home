@@ -278,7 +278,7 @@ export default function MainLayout({
 
         {/* ส่วนท้ายหน้ากระดาษ */}
         <footer className="border-t border-gray-200 py-4 px-4 md:px-8 text-xs text-gray-500 max-w-6xl w-full mx-auto">
-          เทศบาลตำบลสันกลาง • ร่วมคัดแยกด้วยภาพ ไม่ต้องชั่งน้ำหนัก
+          เทศบาลตำบลสันกลาง • ร่วมคัดแยกด้วยภาพ 
         </footer>
       </div>
 

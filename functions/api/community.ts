@@ -1,4 +1,4 @@
-// ไฟล์: functions/api/community.ts (ทำงานบน Cloudflare Pages จริง - Hardened & Optimized)
+// ไฟล์: functions/api/community.ts (ทำงานบน Cloudflare Pages จริง - Hardened & Optimized + Weight KG)
 interface Env {
   DB: any; // D1 Binding
 }
@@ -85,7 +85,7 @@ export const onRequestGet = async (context: { request: Request; env: Env }) => {
       });
     }
 
-    // เตรียมคำสั่ง SQL ทั้ง 3 ชุด แล้วรันพร้อมกันด้วย env.DB.batch() เพื่อลด Latency
+    // เตรียมคำสั่ง SQL ทั้ง 3 ชุด (รวมการคำนวณ SUM(r.weight_kg) มาในรอบเดียว)
     const settingsStmt = env.DB.prepare(
       "SELECT value FROM app_settings WHERE key = 'base_households' LIMIT 1"
     );
@@ -94,7 +94,8 @@ export const onRequestGet = async (context: { request: Request; env: Env }) => {
       `SELECT 
          h.moo AS moo,
          COUNT(DISTINCT r.household_id) AS participating,
-         COUNT(r.id) AS records
+         COUNT(r.id) AS records,
+         ROUND(COALESCE(SUM(r.weight_kg), 0), 2) AS total_weight_kg
        FROM households h
        INNER JOIN waste_records r ON r.household_id = h.id
        WHERE r.record_date >= ?1 AND r.record_date <= ?2
@@ -107,7 +108,8 @@ export const onRequestGet = async (context: { request: Request; env: Env }) => {
         `SELECT 
            r.category_id AS category_id,
            COUNT(DISTINCT r.household_id) AS households_count,
-           COUNT(r.id) AS records_count
+           COUNT(r.id) AS records_count,
+           ROUND(COALESCE(SUM(r.weight_kg), 0), 2) AS weight_kg_sum
          FROM waste_records r
          INNER JOIN households h ON r.household_id = h.id
          WHERE r.record_date >= ?1 AND r.record_date <= ?2
@@ -118,7 +120,8 @@ export const onRequestGet = async (context: { request: Request; env: Env }) => {
         `SELECT 
            r.category_id AS category_id,
            COUNT(DISTINCT r.household_id) AS households_count,
-           COUNT(r.id) AS records_count
+           COUNT(r.id) AS records_count,
+           ROUND(COALESCE(SUM(r.weight_kg), 0), 2) AS weight_kg_sum
          FROM waste_records r
          INNER JOIN households h ON r.household_id = h.id
          WHERE r.record_date >= ?1 AND r.record_date <= ?2 AND h.moo = ?3
@@ -143,17 +146,25 @@ export const onRequestGet = async (context: { request: Request; env: Env }) => {
       } catch {}
     }
 
-    const villageLookup = new Map<number, { participating: number; records: number }>();
+    const villageLookup = new Map<
+      number,
+      { participating: number; records: number; weightKg: number }
+    >();
     for (const row of villageRes?.results || []) {
       villageLookup.set(Number(row.moo), {
         participating: Number(row.participating) || 0,
         records: Number(row.records) || 0,
+        weightKg: Number(Number(row.total_weight_kg || 0).toFixed(2)),
       });
     }
 
     const allVillages = [1, 2, 3, 4, 5, 6, 7].map((moo) => {
       const totalHouseholds = baseMap[moo] || 0;
-      const stat = villageLookup.get(moo) || { participating: 0, records: 0 };
+      const stat = villageLookup.get(moo) || {
+        participating: 0,
+        records: 0,
+        weightKg: 0,
+      };
       const percent =
         totalHouseholds > 0
           ? Number(((stat.participating / totalHouseholds) * 100).toFixed(1))
@@ -164,6 +175,7 @@ export const onRequestGet = async (context: { request: Request; env: Env }) => {
         participating: stat.participating,
         percent,
         records: stat.records,
+        weightKg: stat.weightKg,
       };
     });
 
@@ -172,11 +184,15 @@ export const onRequestGet = async (context: { request: Request; env: Env }) => {
         ? allVillages
         : allVillages.filter((v) => v.moo === Number(area));
 
-    const categoryStats: Record<string, { households: number; records: number }> = {};
+    const categoryStats: Record<
+      string,
+      { households: number; records: number; weightKg: number }
+    > = {};
     for (const row of categoryRes?.results || []) {
       categoryStats[String(row.category_id)] = {
         households: Number(row.households_count) || 0,
         records: Number(row.records_count) || 0,
+        weightKg: Number(Number(row.weight_kg_sum || 0).toFixed(2)),
       };
     }
 
@@ -189,6 +205,9 @@ export const onRequestGet = async (context: { request: Request; env: Env }) => {
       0
     );
     const totalRecords = filteredVillages.reduce((sum, v) => sum + v.records, 0);
+    const totalWeightKg = Number(
+      filteredVillages.reduce((sum, v) => sum + v.weightKg, 0).toFixed(2)
+    );
     const participationPercent =
       totalBaseHouseholds > 0
         ? Number(((totalParticipating / totalBaseHouseholds) * 100).toFixed(1))
@@ -201,6 +220,7 @@ export const onRequestGet = async (context: { request: Request; env: Env }) => {
           baseHouseholds: totalBaseHouseholds,
           participationPercent,
           totalRecords,
+          totalWeightKg,
         },
         categoryStats,
         villageStats: filteredVillages,
@@ -210,7 +230,6 @@ export const onRequestGet = async (context: { request: Request; env: Env }) => {
         status: 200,
         headers: {
           "Content-Type": "application/json",
-          // ให้ Edge Cache ข้อมูลชุดเดิมไว้ 60 วินาที ลดภาระ D1 เวลาคนเข้าดูพร้อมกันเยอะๆ
           "Cache-Control": "public, max-age=60, s-maxage=60",
         },
       }
