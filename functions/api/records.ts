@@ -383,6 +383,15 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
         }
       }
 
+      if (finalUrls.length === 0) {
+        return new Response(
+          JSON.stringify({
+            error: `รูปภาพในหมวด "${catId}" ไม่สามารถอัปโหลดได้ (รองรับเฉพาะไฟล์รูป JPG, PNG, WebP ขนาดไม่เกิน 2MB)`,
+          }),
+          { status: 400, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
       await env.DB.prepare(
         `INSERT INTO waste_records (household_id, category_id, record_date, images, weight_kg, points)
          VALUES (?1, ?2, ?3, ?4, ?5, 1)
@@ -395,6 +404,8 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
         .bind(householdId, catId, recordDate, JSON.stringify(finalUrls), weightKg)
         .run();
     }
+
+
 
     return new Response(JSON.stringify({ success: true, savedCount: selectedIds.length }), {
       status: 200,

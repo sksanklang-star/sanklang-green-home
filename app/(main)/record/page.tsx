@@ -1,6 +1,13 @@
 "use client";
 
-import React, { useState, useRef, useEffect, useCallback, useMemo, Suspense } from "react";
+import React, {
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  useMemo,
+  Suspense,
+} from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Camera,
@@ -96,13 +103,15 @@ const WASTE_CATEGORIES: WasteCategory[] = [
   },
 ];
 
+// รองรับทั้ง Android/PC (WebP) และ iPhone/iOS Safari (Fallback เป็น JPEG อัตโนมัติ)
 async function compressImage(file: File): Promise<File> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(file);
+
     img.onload = () => {
       URL.revokeObjectURL(url);
-      const MAX_SIZE = 1280;
+      const MAX_SIZE = 1200;
       let width = img.width;
       let height = img.height;
 
@@ -118,26 +127,66 @@ async function compressImage(file: File): Promise<File> {
       canvas.width = width;
       canvas.height = height;
       const ctx = canvas.getContext("2d");
-      ctx?.drawImage(img, 0, 0, width, height);
+      if (!ctx) {
+        reject(new Error("ไม่สามารถประมวลผลรูปภาพได้"));
+        return;
+      }
 
+      // ถมพื้นหลังสีขาวกันภาพโปร่งใสเวลาแปลงเป็น JPEG บน iPhone
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(img, 0, 0, width, height);
+
+      // ลองแปลงเป็น WebP ก่อน ถ้า iPhone ไม่รองรับหรือไฟล์ใหญ่เกิน ให้แปลงเป็น JPEG ทันที
       canvas.toBlob(
-        (blob) => {
-          if (!blob) {
-            resolve(file);
+        (webpBlob) => {
+          if (
+            webpBlob &&
+            webpBlob.type === "image/webp" &&
+            webpBlob.size > 0 &&
+            webpBlob.size <= 1.8 * 1024 * 1024
+          ) {
+            const safeName = file.name.replace(/\.[^.]+$/, "") || "waste";
+            resolve(
+              new File([webpBlob], `${safeName}.webp`, { type: "image/webp" })
+            );
             return;
           }
-          const compressedFile = new File(
-            [blob],
-            file.name.replace(/\.[^.]+$/, ".webp"),
-            { type: "image/webp" }
+
+          // Fallback สำหรับ iPhone / Safari: ใช้ image/jpeg คุณภาพ 0.8
+          canvas.toBlob(
+            (jpegBlob) => {
+              if (!jpegBlob || jpegBlob.size === 0) {
+                reject(
+                  new Error(
+                    "ไม่สามารถแปลงไฟล์รูปจากอุปกรณ์นี้ได้ กรุณาตั้งค่ากล้องเป็นรูปแบบ JPEG (Most Compatible)"
+                  )
+                );
+                return;
+              }
+              const safeName = file.name.replace(/\.[^.]+$/, "") || "waste";
+              resolve(
+                new File([jpegBlob], `${safeName}.jpg`, { type: "image/jpeg" })
+              );
+            },
+            "image/jpeg",
+            0.8
           );
-          resolve(compressedFile);
         },
         "image/webp",
         0.78
       );
     };
-    img.onerror = () => resolve(file);
+
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(
+        new Error(
+          "เบราว์เซอร์ไม่สามารถอ่านไฟล์รูปนี้ได้ (หากใช้ iPhone กรุณาถ่ายรูปผ่านปุ่ม 'ถ่ายรูป' หรือใช้ไฟล์ JPG/PNG)"
+        )
+      );
+    };
+
     img.src = url;
   });
 }
@@ -145,7 +194,14 @@ async function compressImage(file: File): Promise<File> {
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      if (!result.startsWith("data:image/")) {
+        reject(new Error("รูปแบบข้อมูลรูปภาพไม่ถูกต้อง"));
+        return;
+      }
+      resolve(result);
+    };
     reader.onerror = (err) => reject(err);
     reader.readAsDataURL(file);
   });
@@ -175,13 +231,16 @@ function RecordContent() {
   const [weightsByCategory, setWeightsByCategory] = useState<
     Record<string, string>
   >({});
-  // เก็บรายชื่อหมวดหมู่ที่ยังไม่ได้กรอกน้ำหนักตอนกดบันทึก เพื่อไฮไลต์กรอบสีแดง
   const [missingWeightIds, setMissingWeightIds] = useState<string[]>([]);
 
+  // จำไว้ว่าวันนี้เคยมีข้อมูลเดิมในฐานข้อมูลหรือไม่ (ถ้าไม่เคยมี ห้ามกดบันทึกตอนรูปเป็น 0 เด็ดขาด)
+  const [hadExistingRecords, setHadExistingRecords] = useState(false);
+
   const [loadingExisting, setLoadingExisting] = useState(false);
+  // State สำหรับแสดง Modal หมุนๆ ตอนกำลังย่อรูปจากมือถือ
+  const [processingImages, setProcessingImages] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  // State สำหรับ Modal ดูรูปขยายใหญ่ในหน้าเดิม
   const [lightbox, setLightbox] = useState<{
     title: string;
     images: string[];
@@ -210,10 +269,12 @@ function RecordContent() {
   const applyRecordsToState = useCallback((records: any[]) => {
     const loadedImages: Record<string, ImageItem[]> = {};
     const loadedWeights: Record<string, string> = {};
+    let foundAny = false;
 
     for (const rec of records) {
       const urls: string[] = Array.isArray(rec.images) ? rec.images : [];
       if (urls.length > 0) {
+        foundAny = true;
         loadedImages[rec.category_id] = urls.map((url) => ({
           previewUrl: url,
           existingUrl: url,
@@ -225,6 +286,7 @@ function RecordContent() {
       }
     }
 
+    setHadExistingRecords(foundAny);
     setImagesByCategory(loadedImages);
     setWeightsByCategory(loadedWeights);
     setMissingWeightIds([]);
@@ -270,7 +332,6 @@ function RecordContent() {
     };
   }, [household?.id, recordDate, applyRecordsToState]);
 
-  // จัดการเมื่อกรอกปริมาณกิโลกรัม (รับเฉพาะตัวเลขและจุดทศนิยม)
   const handleWeightChange = (id: string, rawVal: string) => {
     const cleaned = rawVal.replace(/[^0-9.]/g, "");
     const parts = cleaned.split(".");
@@ -289,6 +350,7 @@ function RecordContent() {
     }
   };
 
+  // เมื่อเลือกรูปหรือถ่ายรูป จะเปิด Modal กำลังประมวลผลรูปภาพทันทีเพื่อไม่ให้หน้าจอนิ่ง
   const handleFileChange = async (
     id: string,
     e: React.ChangeEvent<HTMLInputElement>
@@ -304,25 +366,33 @@ function RecordContent() {
     }
 
     const filesToProcess = Array.from(files).slice(0, 3 - currentImages.length);
-    const processedItems: ImageItem[] = [];
-
-    for (const rawFile of filesToProcess) {
-      const compressed = await compressImage(rawFile);
-      processedItems.push({
-        file: compressed,
-        previewUrl: URL.createObjectURL(compressed),
-      });
-    }
-
-    setImagesByCategory((prev) => ({
-      ...prev,
-      [id]: [...(prev[id] || []), ...processedItems],
-    }));
-
     e.target.value = "";
+
+    setProcessingImages(true);
+    try {
+      // เว้นจังหวะสั้นๆ ให้ React เรนเดอร์ Modal หมุนๆ ขึ้นมาก่อนเริ่มย่อรูปหนักๆ
+      await new Promise((r) => setTimeout(r, 50));
+
+      const processedItems: ImageItem[] = [];
+      for (const rawFile of filesToProcess) {
+        const compressed = await compressImage(rawFile);
+        processedItems.push({
+          file: compressed,
+          previewUrl: URL.createObjectURL(compressed),
+        });
+      }
+
+      setImagesByCategory((prev) => ({
+        ...prev,
+        [id]: [...(prev[id] || []), ...processedItems],
+      }));
+    } catch (err: any) {
+      alert(err?.message || "ไม่สามารถโหลดรูปภาพนี้ได้ กรุณาลองถ่ายใหม่อีกครั้งครับ");
+    } finally {
+      setProcessingImages(false);
+    }
   };
 
-  // เมื่อลบรูปออกจนเหลือ 0 รูป หมวดนั้นจะถูกยกเลิกการเลือกอัตโนมัติ
   const removeImage = (id: string, indexToRemove: number) => {
     setImagesByCategory((prev) => {
       const current = prev[id] || [];
@@ -339,12 +409,24 @@ function RecordContent() {
   };
 
   const handleSubmit = async () => {
-    if (submitting) return;
+    if (submitting || processingImages) return;
 
     if (!household?.id) {
       alert("กรุณาระบุบ้านเลขที่ก่อนบันทึกข้อมูลครับ");
       router.push("/");
       return;
+    }
+
+    // 🔒 ดักจับกรณีไม่ได้แนบรูปอะไรเลย
+    if (selectedIds.length === 0) {
+      if (!hadExistingRecords) {
+        alert("กรุณาถ่ายรูปหรือเพิ่มรูปขยะอย่างน้อย 1 ชนิดก่อนกดบันทึกครับ");
+        return;
+      }
+      const confirmDeleteAll = window.confirm(
+        "คุณได้ลบรูปภาพของวันนี้ออกทั้งหมด ต้องการลบรายการบันทึกของวันนี้ใช่หรือไม่?"
+      );
+      if (!confirmDeleteAll) return;
     }
 
     // ตรวจสอบว่าทุกหมวดที่มีรูปภาพ ต้องกรอกน้ำหนัก (> 0 กก.) ครบทุกหมวด
@@ -374,13 +456,23 @@ function RecordContent() {
 
       for (const catId of selectedIds) {
         const items = imagesByCategory[catId] || [];
-        imagesPayload[catId] = await Promise.all(
+        const encodedList = await Promise.all(
           items.map(async (item) => {
             if (item.existingUrl) return item.existingUrl;
             if (item.file) return await fileToBase64(item.file);
             return "";
           })
         );
+
+        const validList = encodedList.filter((str) => str.length > 0);
+        // 🔒 ดักจับชั้นที่ 2: ถ้าแปลงไฟล์รูปแล้วไม่สำเร็จ ห้ามส่งไปบันทึกเด็ดขาด
+        if (validList.length === 0) {
+          throw new Error(
+            "พบรูปภาพที่ไม่สามารถอัปโหลดได้ กรุณาลบรูปแล้วลองถ่ายใหม่อีกครั้งครับ"
+          );
+        }
+
+        imagesPayload[catId] = validList;
         const w = parseFloat(weightsByCategory[catId] || "0");
         weightsPayload[catId] = Math.round(w * 100) / 100;
       }
@@ -413,26 +505,26 @@ function RecordContent() {
       });
 
       router.push("/history");
-    } catch (error) {
-      alert("เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์");
+    } catch (error: any) {
+      alert(error?.message || "เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์");
     } finally {
       setSubmitting(false);
     }
   };
 
-  // คำนวณน้ำหนักรวมของหมวดที่มีรูปภาพ
   const totalSelectedWeight = selectedIds.reduce((sum, id) => {
     const val = parseFloat(weightsByCategory[id] || "0");
     return sum + (Number.isFinite(val) && val > 0 ? val : 0);
   }, 0);
 
-  // 1. คำนวณวันที่สำหรับกำหนดช่วง (Format: YYYY-MM-DD)
   const today = new Date();
-  const maxDate = today.toISOString().split('T')[0]; // วันนี้ (ค่ามากที่สุดที่เลือกได้)
-
+  const maxDate = today.toISOString().split("T")[0];
   const sevenDaysAgo = new Date();
   sevenDaysAgo.setDate(today.getDate() - 7);
-  const minDate = sevenDaysAgo.toISOString().split('T')[0]; // 7 วันที่แล้ว (ค่าน้อยที่สุดที่เลือกได้)
+  const minDate = sevenDaysAgo.toISOString().split("T")[0];
+
+  // ปุ่มบันทึกจะกดได้ก็ต่อเมื่อมีรูปอย่างน้อย 1 หมวด หรือเคยมีข้อมูลของวันนี้แล้วต้องการลบออก
+  const canSubmit = selectedIds.length > 0 || hadExistingRecords;
 
   return (
     <div className="space-y-6 pb-4">
@@ -470,8 +562,8 @@ function RecordContent() {
               value={recordDate}
               onChange={(e) => setRecordDate(e.target.value)}
               className="w-full bg-white border border-gray-300 rounded-xl px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#085f46]/20 focus:border-[#085f46] transition-colors"
-              min={minDate} 
-              max={maxDate} 
+              min={minDate}
+              max={maxDate}
             />
           </div>
           <div className="text-xs text-gray-500 space-y-1">
@@ -490,7 +582,7 @@ function RecordContent() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {WASTE_CATEGORIES.map((cat) => {
           const images = imagesByCategory[cat.id] || [];
-          const isSelected = images.length > 0; // เช็คอัตโนมัติจากรูปภาพเท่านั้น
+          const isSelected = images.length > 0;
           const weightVal = weightsByCategory[cat.id] || "";
           const isMissingWeight = missingWeightIds.includes(cat.id);
 
@@ -523,7 +615,6 @@ function RecordContent() {
                     </div>
                   </div>
 
-                  {/* Checkbox ล็อกอัตโนมัติ (ติ๊กถูกเฉพาะเมื่อมีรูปภาพ 1-3 รูป) */}
                   <input
                     type="checkbox"
                     checked={isSelected}
@@ -542,7 +633,7 @@ function RecordContent() {
                 <div className="grid grid-cols-2 gap-3 mt-4">
                   <input
                     type="file"
-                    accept="image/*"
+                    accept="image/jpeg,image/png,image/webp,image/*"
                     capture="environment"
                     ref={(el) => {
                       cameraInputRefs.current[cat.id] = el;
@@ -552,7 +643,7 @@ function RecordContent() {
                   />
                   <input
                     type="file"
-                    accept="image/*"
+                    accept="image/jpeg,image/png,image/webp,image/*"
                     multiple
                     ref={(el) => {
                       fileInputRefs.current[cat.id] = el;
@@ -563,8 +654,9 @@ function RecordContent() {
 
                   <button
                     type="button"
+                    disabled={processingImages || submitting}
                     onClick={() => cameraInputRefs.current[cat.id]?.click()}
-                    className="flex items-center justify-center gap-2 border border-gray-200 hover:bg-gray-50 text-gray-800 font-semibold text-xs py-2.5 px-3 rounded-xl transition-colors"
+                    className="flex items-center justify-center gap-2 border border-gray-200 hover:bg-gray-50 disabled:opacity-50 text-gray-800 font-semibold text-xs py-2.5 px-3 rounded-xl transition-colors"
                   >
                     <Camera className="w-4 h-4 text-gray-600" />
                     <span>ถ่ายรูป</span>
@@ -572,15 +664,16 @@ function RecordContent() {
 
                   <button
                     type="button"
+                    disabled={processingImages || submitting}
                     onClick={() => fileInputRefs.current[cat.id]?.click()}
-                    className="flex items-center justify-center gap-2 border border-gray-200 hover:bg-gray-50 text-gray-800 font-semibold text-xs py-2.5 px-3 rounded-xl transition-colors"
+                    className="flex items-center justify-center gap-2 border border-gray-200 hover:bg-gray-50 disabled:opacity-50 text-gray-800 font-semibold text-xs py-2.5 px-3 rounded-xl transition-colors"
                   >
                     <ImagePlus className="w-4 h-4 text-gray-600" />
                     <span>เพิ่มรูป</span>
                   </button>
                 </div>
 
-                {/* ช่องกรอกปริมาณโดยรวม (บังคับกรอกเมื่อมีรูปภาพ) */}
+                {/* ช่องกรอกปริมาณโดยรวม */}
                 <div
                   className={`mt-3 flex items-center justify-between gap-3 rounded-xl px-3.5 py-2 border transition-colors ${
                     isMissingWeight
@@ -630,7 +723,7 @@ function RecordContent() {
                   </p>
                 )}
 
-                {/* แสดงรูปภาพ (กดที่รูปเพื่อเปิดดูรูปใหญ่ใน Modal หน้าเดิมได้ทันที) */}
+                {/* แสดงรูปภาพ */}
                 {images.length > 0 && (
                   <div className="flex items-center gap-2.5 mt-3.5 overflow-x-auto py-1">
                     {images.map((item, idx) => (
@@ -700,12 +793,12 @@ function RecordContent() {
 
         <button
           type="button"
-          disabled={submitting}
+          disabled={submitting || processingImages || !canSubmit}
           onClick={handleSubmit}
-          className={`inline-flex items-center justify-center gap-2 text-white font-semibold text-xs px-5 py-3 rounded-xl transition-colors disabled:opacity-60 ${
+          className={`inline-flex items-center justify-center gap-2 text-white font-semibold text-xs px-5 py-3 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
             selectedIds.length > 0
               ? "bg-[#085f46] hover:bg-[#064e39]"
-              : "bg-[#689b8a] hover:bg-[#5a8a7a]"
+              : "bg-[#689b8a]"
           }`}
         >
           {submitting ? (
@@ -713,9 +806,38 @@ function RecordContent() {
           ) : (
             <Check className="w-4 h-4" />
           )}
-          <span>{submitting ? "กำลังบันทึก..." : "บันทึกการคัดแยก"}</span>
+          <span>
+            {submitting
+              ? "กำลังบันทึก..."
+              : selectedIds.length === 0 && hadExistingRecords
+              ? "บันทึกการลบรายการ"
+              : "บันทึกการคัดแยก"}
+          </span>
         </button>
       </div>
+
+      {/* =========================================================
+          Modal แสดงสถานะกำลังโหลดรูปภาพ / กำลังบันทึกข้อมูล
+      ========================================================= */}
+      {(processingImages || submitting) && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-[2px] flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-6 md:p-8 max-w-xs w-full shadow-2xl flex flex-col items-center text-center space-y-3">
+            <div className="w-14 h-14 rounded-full bg-[#eaf5ea] flex items-center justify-center text-[#085f46]">
+              <Loader2 className="w-8 h-8 animate-spin" />
+            </div>
+            <h4 className="font-bold text-gray-900 text-base">
+              {processingImages
+                ? "กำลังเตรียมรูปภาพ..."
+                : "กำลังบันทึกข้อมูล..."}
+            </h4>
+            <p className="text-xs text-gray-500 leading-relaxed">
+              {processingImages
+                ? "ระบบกำลังย่อขนาดรูปภาพให้เหมาะกับการอัปโหลด กรุณารอสักครู่ค่ะ"
+                : "กำลังอัปโหลดรูปภาพและบันทึกข้อมูลลงระบบ กรุณาอย่าปิดหน้านี้ค่ะ"}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* =========================================================
           Modal Lightbox: แสดงรูปภาพขยายใหญ่ในหน้าเดิม
